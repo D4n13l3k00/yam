@@ -1,13 +1,13 @@
-# Development
+# Разработка
 
-## Prerequisites
+## Требования
 
-- Rust stable with Cargo.
-- Docker for reproducible Linux cross-builds.
-- `zip` for packaging examples.
-- Android Debug Bridge for deploying to a speaker over ADB.
+- Rust stable и Cargo.
+- Docker для воспроизводимых кросс-сборок Linux.
+- `zip` для упаковки примеров.
+- Android Debug Bridge для развёртывания на колонке через ADB.
 
-## Local development
+## Локальная разработка
 
 ```sh
 cargo fmt
@@ -15,46 +15,46 @@ cargo check
 cargo run -- --listen 127.0.0.1:8099 --data-dir ./data
 ```
 
-The runtime persists settings and packages below `--data-dir`. Delete only a disposable development data directory when a clean state is required.
+Runtime хранит настройки и пакеты в каталоге из `--data-dir`. Удаляйте только временный каталог разработки, если требуется чистое состояние.
 
-## Architecture
+## Архитектура
 
-`App` owns shared settings, a device profile, LED controller and package manager. Axum serves the Web UI and JSON endpoints. Each Lua plugin runs in a blocking task with restricted Lua standard libraries. The runtime grants API tables only when the package requests the matching permission.
+`App` хранит общие настройки, профиль устройства, LED-контроллер и менеджер пакетов. Axum обслуживает Web UI и JSON API. Каждый Lua-плагин выполняется в блокирующей задаче с ограниченным набором стандартных библиотек Lua. Runtime выдаёт таблицы API только при наличии соответствующего permission в манифесте.
 
-Plugin execution is asynchronous. A running plugin has an atomic cancellation token. `POST /api/plugins/:id/stop` signals the token and turns LEDs off. Lua code should yield frequently with `alice.sleep`.
+Запуск плагинов асинхронный. У работающего плагина есть атомарный токен отмены. `POST /api/plugins/:id/stop` устанавливает токен и выключает LED. Lua-код должен регулярно вызывать `alice.sleep`.
 
-## Device profiles
+## Профили устройств
 
-At startup YAFF inspects device-tree files, OS files, sysfs and available commands. The profile is available from `GET /api/device`.
+При старте YAFF проверяет device-tree, файлы ОС, sysfs и наличие команд. Профиль доступен через `GET /api/device`.
 
-Supported LED profiles:
+Поддерживаемые LED-профили:
 
-| Profile | LED path | Count |
+| Профиль | Путь к LED | Количество |
 | --- | --- | --- |
 | `mini2` | `mini2:{red,green,blue}:ringN` | 6 |
 | `micro` | `micro:{red,green,blue}:ringN` | 3 |
-| `sysfs-ring` | `{red,green,blue}:ringN` | configured |
-| `custom` | `path_template` | configured |
+| `sysfs-ring` | `{red,green,blue}:ringN` | задаётся в настройках |
+| `custom` | `path_template` | задаётся в настройках |
 
-For `custom`, the template supports `{root}`, `{channel}` and `{index}`. A configured, valid RGB ring adds `led.ring.rgb`, `led.ring.<count>` and `led.pattern.v1` to the profile at startup.
+Для `custom` шаблон поддерживает `{root}`, `{channel}` и `{index}`. Если настроенное RGB-кольцо доступно, YAFF добавляет в профиль `led.ring.rgb`, `led.ring.<count>` и `led.pattern.v1`.
 
-## Build targets
+## Целевые сборки
 
-Station Lite detected during development uses AArch64 Linux. Build it reproducibly with:
+Station Lite, обнаруженная при разработке, использует AArch64 Linux. Воспроизводимая сборка:
 
 ```sh
 docker run --rm -v "$PWD":/home/rust/src -w /home/rust/src messense/rust-musl-cross:aarch64-musl cargo build --release
 ```
 
-The result is `target/aarch64-unknown-linux-musl/release/yaff`.
+Результат: `target/aarch64-unknown-linux-musl/release/yaff`.
 
-For armhf, use an armv7 musl cross-image/toolchain and produce an `armv7-unknown-linux-musleabihf` binary.
+Для armhf используйте образ или toolchain для armv7 musl и собирайте бинарник `armv7-unknown-linux-musleabihf`.
 
-## Validation checklist
+## Проверочный список
 
-1. Run formatting and `cargo check`.
-2. Start against a temporary data directory.
-3. Install an example `.yap` package.
-4. Confirm `GET /api/plugins` marks it compatible.
-5. Start it and confirm `running: true`.
-6. Stop it and confirm the hardware reaches its safe state.
+1. Запустите форматирование и `cargo check`.
+2. Запустите runtime с временным data-dir.
+3. Установите пример `.yap` пакета.
+4. Убедитесь через `GET /api/plugins`, что пакет совместим.
+5. Запустите пакет и проверьте `running: true`.
+6. Остановите пакет и убедитесь, что железо перешло в безопасное состояние.

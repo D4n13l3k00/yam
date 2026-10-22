@@ -1,8 +1,8 @@
-# Plugin development
+# Разработка плагинов
 
-## Package layout
+## Структура пакета
 
-`.yap` is a ZIP archive. `plugin.toml` must be at its root.
+`.yap` — ZIP-архив. В его корне должен находиться `plugin.toml`.
 
 ```text
 my-plugin.yap
@@ -29,41 +29,41 @@ models = ["yandexmicro"]
 features = ["led.ring.rgb", "led.ring.3"]
 ```
 
-Create an archive:
+Создание архива:
 
 ```sh
 cd my-plugin
 zip -r ../my-plugin.yap plugin.toml main.lua patterns sounds bin
 ```
 
-## Lua environment
+## Lua-окружение
 
-Lua has `table`, `string`, `math` and `utf8`. It does not receive `os`, `io`, `package`, debug or network libraries. Globals:
+В Lua доступны `table`, `string`, `math` и `utf8`. Библиотеки `os`, `io`, `package`, debug и сеть недоступны. Глобальные объекты:
 
-- `event` is `manual` for a Web UI launch.
-- `device.model`, `device.architecture`, `device.led_count` and `device.features` describe the current speaker.
-- `alice` contains only APIs approved by the package permissions.
+- `event` содержит `manual` при запуске через Web UI.
+- `device.model`, `device.architecture`, `device.led_count` и `device.features` описывают колонку.
+- `alice` содержит только API, разрешённые permissions пакета.
 
-## Permissions and APIs
+## Permissions и API
 
-| Permission | API | Requirement |
+| Permission | API | Требование |
 | --- | --- | --- |
-| `led` | `alice.set(colors)`, `alice.off()`, `alice.play(path)`, `alice.sleep(ms)` | RGB LED profile |
+| `led` | `alice.set(colors)`, `alice.off()`, `alice.play(path)`, `alice.sleep(ms)` | RGB LED-профиль |
 | `volume` | `alice.volume.set(percent)`, `alice.volume.get()` | `audio.volume.alsa` |
 | `audio` | `alice.audio.play(relative_path)` | `audio.play.aplay` |
 | `bluetooth` | `alice.bluetooth.status()`, `power(bool)`, `scan(bool)`, `pair(mac)`, `connect(mac)`, `disconnect(mac)`, `remove(mac)` | `bluetooth.bluez` |
 | `display` | `alice.display.backlights()`, `set_backlight(name, value)` | `display.backlight` |
-| `system` | `alice.system.hostname()`, `uptime()`, `meminfo()` | none |
-| `exec` | `alice.exec(program, args)` | runtime option `allow_plugin_binaries = true` |
+| `system` | `alice.system.hostname()`, `uptime()`, `meminfo()` | нет |
+| `exec` | `alice.exec(program, args)` | runtime-настройка `allow_plugin_binaries = true` |
 
-`alice.set` expects exactly `device.led_count` strings in `#RRGGBB` form. `alice.sleep` accepts 0–60000 ms and is the cancellation point for animations.
+`alice.set` принимает ровно `device.led_count` строк формата `#RRGGBB`. `alice.sleep` принимает 0–60000 мс и является точкой отмены анимации.
 
-## Compatibility
+## Совместимость
 
-`models` is an exact match. `features` is an all-of match. If either condition fails, YAFF keeps the package installed but blocks its start and displays the reason in Web UI.
+`models` проверяется точным совпадением. Для `features` должны присутствовать все перечисленные возможности. При несовместимости YAFF сохраняет пакет, но блокирует запуск и показывает причину в Web UI.
 
-Prefer feature requirements over model names when possible. For example, an RGB animation should require `led.ring.rgb` and the exact ring size only if its layout depends on it.
+По возможности указывайте требования к возможностям, а не к модели. Например, RGB-анимация должна требовать `led.ring.rgb`; точный размер кольца нужен только если от него зависит раскладка кадров.
 
-## Lifecycle
+## Жизненный цикл
 
-The Start action is asynchronous. A second Start cancels the previous run for that plugin before launching a new one. Stop sends cancellation and turns the runtime LED controller off. Make animation loops call `alice.sleep` or `alice.set` on every frame.
+Действие запуска асинхронно. Повторный запуск отменяет предыдущее выполнение этого же плагина перед новым стартом. Остановка отправляет отмену и выключает LED-контроллер runtime. В каждом кадре анимации вызывайте `alice.sleep` или `alice.set`.

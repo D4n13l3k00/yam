@@ -1,19 +1,19 @@
-# Deployment
+# Развёртывание
 
 ## Installer
 
-The installer receives a URL to a prebuilt binary and an optional destination. Its default destination is `/data/quazar/yaff`.
+Installer принимает URL готового бинарника и необязательный каталог установки. Каталог по умолчанию — `/data/quazar/yaff`.
 
 ```sh
 curl -fsSL https://<host>/yaff/install.sh | sudo sh -s -- https://<host>/yaff/yaff-aarch64-linux-musl
 curl -fsSL https://<host>/yaff/install.sh | sudo sh -s -- https://<host>/yaff/yaff-aarch64-linux-musl /data/quazar/custom-yaff
 ```
 
-It creates `bin/yaff`, `data/` and `run.sh`. On systems with systemd it also installs and starts `yaff.service`.
+Скрипт создаёт `bin/yaff`, `data/` и `run.sh`. На системах с systemd он также устанавливает и запускает `yaff.service`.
 
-## ADB deployment
+## Развёртывание через ADB
 
-For the connected ADB device:
+Для подключённого ADB-устройства:
 
 ```sh
 adb -s <ip>:5555 shell 'mkdir -p /data/quazar/yaff/bin /data/quazar/yaff/data'
@@ -22,7 +22,7 @@ adb -s <ip>:5555 shell 'chmod 755 /data/quazar/yaff/bin/yaff'
 adb -s <ip>:5555 shell 'nohup /data/quazar/yaff/bin/yaff --data-dir /data/quazar/yaff/data >/data/quazar/yaff/yaff.log 2>&1 &'
 ```
 
-For the known Station Lite/Micro sysfs layout:
+Для известной sysfs-раскладки Station Lite/Micro:
 
 ```toml
 allow_plugin_binaries = false
@@ -33,9 +33,9 @@ count = 3
 sysfs_root = "/sys/class/leds"
 ```
 
-Save it as `/data/quazar/yaff/data/settings.toml` before the first start.
+Сохраните настройки в `/data/quazar/yaff/data/settings.toml` до первого запуска.
 
-## Operations
+## Эксплуатация
 
 ```sh
 adb -s <ip>:5555 shell 'tail -f /data/quazar/yaff/yaff.log'
@@ -44,4 +44,4 @@ curl http://127.0.0.1:18099/api/device
 curl -X POST http://127.0.0.1:18099/api/led/off
 ```
 
-The Web UI is unauthenticated. Bind it to a trusted LAN only, or use an authenticated reverse proxy.
+Web UI не содержит аутентификации. Открывайте его только в доверенной LAN или используйте reverse proxy с аутентификацией.
