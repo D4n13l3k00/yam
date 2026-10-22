@@ -1,0 +1,16 @@
+[Unit]
+Description=YAFF plugin host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/opt/yaff/bin/yaff --data-dir /opt/yaff
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
