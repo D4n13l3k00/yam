@@ -20,6 +20,23 @@ $binDir = Join-Path $Prefix "bin"
 $yam = Join-Path $binDir "yam.exe"
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("yam-" + [guid]::NewGuid())
 
+function Find-StationIp {
+    $adb = Get-Command adb -ErrorAction SilentlyContinue
+    if ($adb) {
+        $serial = (& adb devices | Select-Object -Skip 1 | ForEach-Object {
+            $fields = $_ -split "\s+"
+            if ($fields.Length -ge 2 -and $fields[1] -eq "device") { $fields[0] }
+        } | Select-Object -First 1)
+        if ($serial) {
+            $route = & adb -s $serial shell "ip route get 1.1.1.1" 2>$null
+            if ($route -match "\bsrc\s+(\d{1,3}(?:\.\d{1,3}){3})") { return $Matches[1] }
+            $address = & adb -s $serial shell "ip -4 addr show wlan0" 2>$null
+            if ($address -match "\binet\s+(\d{1,3}(?:\.\d{1,3}){3})") { return $Matches[1] }
+        }
+    }
+    return Read-Host "Yandex Station IP address"
+}
+
 function Get-ReleaseAsset([string]$Name) {
     $path = Join-Path $tmp $Name
     Invoke-WebRequest -Headers $headers -Uri "$baseUrl/$Name" -OutFile $path
@@ -42,4 +59,10 @@ try {
 }
 
 Write-Host "YAM $tag installed in $Prefix"
-Write-Host "Use yam --url http://<speaker-ip>:8099 ..."
+$stationIp = Find-StationIp
+if (-not $stationIp) { throw "Yandex Station IP address is required" }
+$yamUrl = "http://$stationIp`:8099"
+[Environment]::SetEnvironmentVariable("YAM_URL", $yamUrl, "User")
+$env:YAM_URL = $yamUrl
+Write-Host "YAM_URL configured as $yamUrl"
+Write-Host "Use yam list or yam --url $yamUrl list"

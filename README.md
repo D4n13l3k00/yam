@@ -4,7 +4,7 @@ yam = Y Application Manager. Ставьте на свою колонку .yap.
 
 Linux / колонка:
 ```sh
-curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sh
 ```
 
 Windows CLI:

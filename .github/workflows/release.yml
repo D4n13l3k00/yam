@@ -24,9 +24,26 @@ jobs:
           path: |
             target/release/yam.exe
 
+  linux-cli:
+    name: Build Linux CLI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build x86_64 musl CLI
+        run: >-
+          docker run --rm
+          -v "$GITHUB_WORKSPACE":/home/rust/src
+          -w /home/rust/src
+          messense/rust-musl-cross:x86_64-musl
+          cargo build --release --locked --bin yam
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yam-x86_64-unknown-linux-musl
+          path: target/x86_64-unknown-linux-musl/release/yam
+
   release:
     name: Build and publish release
-    needs: windows
+    needs: [windows, linux-cli]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -69,38 +86,38 @@ jobs:
           -v "$GITHUB_WORKSPACE":/home/rust/src
           -w /home/rust/src
           messense/rust-musl-cross:aarch64-musl
-          cargo build --release --locked
+          cargo build --release --locked --bin yamd
       - name: Compress yamd
-        run: >-
-          docker run --rm
-          -v "$GITHUB_WORKSPACE":/work
-          ghcr.io/upx/upx:latest
-          --best --lzma /work/target/aarch64-unknown-linux-musl/release/yamd
+        uses: crazy-max/ghaction-upx@v4
+        with:
+          version: latest
+          files: target/aarch64-unknown-linux-musl/release/yamd
+          args: --best --lzma
       - name: Test compressed yamd
-        run: >-
-          docker run --rm
-          -v "$GITHUB_WORKSPACE":/work
-          ghcr.io/upx/upx:latest
-          -t /work/target/aarch64-unknown-linux-musl/release/yamd
+        run: upx -t target/aarch64-unknown-linux-musl/release/yamd
       - name: Package assets and checksums
         run: |
           mkdir -p dist
           cp target/aarch64-unknown-linux-musl/release/yamd "dist/yamd-aarch64-linux-musl"
-          cp target/aarch64-unknown-linux-musl/release/yam "dist/yam-aarch64-linux-musl"
-          chmod 0755 dist/yamd-aarch64-linux-musl dist/yam-aarch64-linux-musl
+          chmod 0755 dist/yamd-aarch64-linux-musl
       - uses: actions/download-artifact@v4
         with:
           name: yam-x86_64-pc-windows-msvc
           path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: yam-x86_64-unknown-linux-musl
+          path: dist
       - name: Create checksums
         run: |
           mv dist/yam.exe dist/yam-x86_64-pc-windows-msvc.exe
-          (cd dist && sha256sum yamd-aarch64-linux-musl yam-aarch64-linux-musl yam-x86_64-pc-windows-msvc.exe > SHA256SUMS)
+          mv dist/yam dist/yam-x86_64-unknown-linux-musl
+          (cd dist && sha256sum yamd-aarch64-linux-musl yam-x86_64-unknown-linux-musl yam-x86_64-pc-windows-msvc.exe > SHA256SUMS)
       - name: Create GitHub release
         run: |
           gh release create "${{ steps.version.outputs.tag }}" \
             dist/yamd-aarch64-linux-musl \
-            dist/yam-aarch64-linux-musl \
+            dist/yam-x86_64-unknown-linux-musl \
             dist/yam-x86_64-pc-windows-msvc.exe \
             dist/SHA256SUMS \
             --title "YAM ${{ steps.version.outputs.version }}" \

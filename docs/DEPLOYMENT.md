@@ -2,18 +2,18 @@
 
 ## Installer
 
-Installer скачивает последний GitHub Release, проверяет `SHA256SUMS`, устанавливает `yamd` и `yam` в `/data/quazar/yam` и запускает daemon через systemd, если он доступен.
+Installer скачивает последний GitHub Release и проверяет `SHA256SUMS`. Он устанавливает CLI на Linux-компьютер в `~/.local/bin/yam`, находит колонку через `adb devices` (либо запрашивает её IP) и загружает/запускает `yamd` на колонке в `/data/quazar/yam`.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sudo sh
-curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sudo sh -s -- 0.1.1 /data/quazar/custom-yam
+curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sh -s -- 0.1.1 "$HOME/.local/bin"
 ```
 
-Первый аргумент — версия (по умолчанию `latest`), второй — каталог установки. Скрипт создаёт `bin/yamd`, `bin/yam`, `data/` и `run.sh`.
+Первый аргумент — версия (по умолчанию `latest`), второй — каталог для `yam` CLI. Для автоматического поиска и развёртывания необходим Android Platform Tools (`adb`).
 
 ## Windows
 
-В PowerShell скачайте installer из репозитория и запустите его. По умолчанию он получает последний GitHub Release, проверяет `SHA256SUMS` и устанавливает CLI в `%LOCALAPPDATA%\YAM\bin`:
+В PowerShell скачайте installer из репозитория и запустите его. По умолчанию он получает последний GitHub Release, проверяет `SHA256SUMS`, устанавливает CLI в `%LOCALAPPDATA%\YAM\bin`, пытается определить IP колонки через `adb devices` и сохраняет `YAM_URL` для текущего пользователя:
 
 ```powershell
 Invoke-WebRequest https://raw.githubusercontent.com/nyakokitsu/yam/main/install.ps1 -OutFile install.ps1

@@ -29,7 +29,7 @@ jobs:
         run: sh -n install.sh
 
   aarch64-musl:
-    name: Build AArch64 musl binaries
+    name: Build AArch64 musl daemon
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,26 +39,39 @@ jobs:
           -v "$GITHUB_WORKSPACE":/home/rust/src
           -w /home/rust/src
           messense/rust-musl-cross:aarch64-musl
-          cargo build --release --locked
+          cargo build --release --locked --bin yamd
       - name: Compress yamd
-        run: >-
-          docker run --rm
-          -v "$GITHUB_WORKSPACE":/work
-          ghcr.io/upx/upx:latest
-          --best --lzma /work/target/aarch64-unknown-linux-musl/release/yamd
+        uses: crazy-max/ghaction-upx@v4
+        with:
+          version: latest
+          files: target/aarch64-unknown-linux-musl/release/yamd
+          args: --best --lzma
       - name: Test compressed yamd
-        run: >-
-          docker run --rm
-          -v "$GITHUB_WORKSPACE":/work
-          ghcr.io/upx/upx:latest
-          -t /work/target/aarch64-unknown-linux-musl/release/yamd
+        run: upx -t target/aarch64-unknown-linux-musl/release/yamd
       - uses: actions/upload-artifact@v4
         with:
-          name: yam-aarch64-linux-musl
+          name: yamd-aarch64-linux-musl
           if-no-files-found: error
           path: |
             target/aarch64-unknown-linux-musl/release/yamd
-            target/aarch64-unknown-linux-musl/release/yam
+
+  linux-cli:
+    name: Build Linux CLI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build x86_64 musl CLI
+        run: >-
+          docker run --rm
+          -v "$GITHUB_WORKSPACE":/home/rust/src
+          -w /home/rust/src
+          messense/rust-musl-cross:x86_64-musl
+          cargo build --release --locked --bin yam
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yam-x86_64-unknown-linux-musl
+          if-no-files-found: error
+          path: target/x86_64-unknown-linux-musl/release/yam
 
   windows:
     name: Build Windows binaries
