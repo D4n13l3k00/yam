@@ -2,18 +2,12 @@
 
 yam = Y Application Manager. Ставьте на свою колонку .yap.
 
-Linux / колонка:
+Linux / macOS:
 ```sh
 curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sh
 ```
 
-macOS arm64 / колонка:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sh
-```
-
-Windows CLI:
+Windows:
 
 ```powershell
 irm https://raw.githubusercontent.com/nyakokitsu/yam/main/install.ps1 | iex
