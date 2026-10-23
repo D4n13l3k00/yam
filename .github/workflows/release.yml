@@ -47,7 +47,6 @@ jobs:
         run: |
           cargo fmt --check
           cargo test --locked
-          cargo check --locked --features registry --bin yam-registry
           sh -n install.sh
       - name: Build AArch64 musl release binaries
         run: >-

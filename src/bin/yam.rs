@@ -2,7 +2,11 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use reqwest::blocking::{multipart, Client};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf};
+
+const DEFAULT_REGISTRY_INDEX: &str =
+    "https://raw.githubusercontent.com/nyakokitsu/yapkg/registry/index.json";
 
 #[derive(Parser)]
 #[command(name = "yam", about = "YAM package manager")]
@@ -163,22 +167,50 @@ fn main() -> Result<()> {
         Command::Registry { command } => {
             let registry = cli
                 .registry
-                .context("pass --registry or set YAM_REGISTRY_URL")?;
+                .unwrap_or_else(|| DEFAULT_REGISTRY_INDEX.into());
             match command {
                 RegistryCommand::List => {
-                    let packages: Value =
-                        json_response(client.get(endpoint(&registry, "/api/packages")).send()?)?;
+                    let (_, packages) = registry_packages(&client, &registry)?;
                     println!("{}", serde_json::to_string_pretty(&packages)?);
                 }
                 RegistryCommand::Pull { id, version } => {
-                    let package = client
-                        .get(endpoint(
-                            &registry,
-                            &format!("/api/packages/{id}/{version}/download"),
-                        ))
-                        .send()?
-                        .error_for_status()?
-                        .bytes()?;
+                    let (source, packages) = registry_packages(&client, &registry)?;
+                    let package = match source {
+                        RegistrySource::Api => client
+                            .get(endpoint(
+                                &registry,
+                                &format!("/api/packages/{id}/{version}/download"),
+                            ))
+                            .send()?
+                            .error_for_status()?
+                            .bytes()?,
+                        RegistrySource::Static { index_url } => {
+                            let entry = packages
+                                .as_array()
+                                .and_then(|entries| {
+                                    entries.iter().find(|entry| {
+                                        entry["id"] == id && entry["version"] == version
+                                    })
+                                })
+                                .context("package version not found in static registry")?;
+                            let package_url = entry["url"]
+                                .as_str()
+                                .context("static registry entry has no URL")?;
+                            let package = client
+                                .get(static_package_url(&index_url, package_url)?)
+                                .send()?
+                                .error_for_status()?
+                                .bytes()?;
+                            let expected = entry["sha256"]
+                                .as_str()
+                                .context("static registry entry has no SHA-256")?;
+                            let actual = format!("{:x}", Sha256::digest(&package));
+                            if actual != expected {
+                                bail!("package checksum mismatch")
+                            }
+                            package
+                        }
+                    };
                     let part = multipart::Part::bytes(package.to_vec())
                         .file_name(format!("{id}-{version}.yap"));
                     print_response(
@@ -222,6 +254,40 @@ fn main() -> Result<()> {
         },
     }
     Ok(())
+}
+
+enum RegistrySource {
+    Api,
+    Static { index_url: String },
+}
+
+fn registry_packages(client: &Client, registry: &str) -> Result<(RegistrySource, Value)> {
+    let index_url = if registry.trim_end_matches('/').ends_with("index.json") {
+        registry.to_string()
+    } else {
+        endpoint(registry, "/index.json")
+    };
+    let response = client.get(&index_url).send()?;
+    if response.status().is_success() {
+        let index: Value = response.json()?;
+        let packages = index["packages"].clone();
+        if !packages.is_array() {
+            bail!("invalid static registry index")
+        }
+        return Ok((RegistrySource::Static { index_url }, packages));
+    }
+    if response.status() != reqwest::StatusCode::NOT_FOUND {
+        return Err(response.error_for_status().unwrap_err().into());
+    }
+    let packages = json_response(client.get(endpoint(registry, "/api/packages")).send()?)?;
+    Ok((RegistrySource::Api, packages))
+}
+
+fn static_package_url(index_url: &str, package_url: &str) -> Result<String> {
+    if reqwest::Url::parse(package_url).is_ok() {
+        return Ok(package_url.into());
+    }
+    Ok(reqwest::Url::parse(index_url)?.join(package_url)?.into())
 }
 
 fn endpoint(base: &str, path: &str) -> String {

@@ -1,5 +1,0 @@
-<!doctype html>
-<html lang="ru"><head><meta charset="utf-8"><title>YAM Registry</title><script src="https://js.hcaptcha.com/1/api.js" async defer></script><style>body{font:16px system-ui;max-width:38rem;margin:4rem auto;padding:0 1rem}button{padding:.6rem 1rem}</style></head>
-<body><h1>YAM Registry</h1><p>Подтвердите hCaptcha для доступа к Web UI и публикации пакетов.</p><div class="h-captcha" data-sitekey="__HCAPTCHA_SITEKEY__"></div><p><button id="login">Продолжить</button></p><output id="error"></output><script>
-document.querySelector('#login').onclick=async()=>{const token=hcaptcha.getResponse();if(!token){error.textContent='Пройдите hCaptcha';return}const r=await fetch('/api/auth/hcaptcha',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token})});if(r.ok)location.reload();else error.textContent=(await r.json()).error||'Ошибка проверки'};
-</script></body></html>
