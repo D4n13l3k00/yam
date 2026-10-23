@@ -1,19 +1,20 @@
-# YAFF
+# YAM
 
-YAFF is a local Rust runtime for Yandex smart speakers. It provides a Web UI, installs `.yap` packages, executes Lua plugins and exposes LED, audio, Bluetooth, display and system APIs.
+yam = Yandex Assistant Modules. Ставьте на свою колонку .yap
 
 ```sh
 cargo check
-cargo run -- --data-dir ./data
+cargo run --bin yamd -- --data-dir ./data
 ```
 
-Open `http://<speaker-ip>:8099`.
+Открываете `http://<speaker-ip>:8099`.
 
-Documentation:
+# Документация
 
-- [Development](docs/DEVELOPMENT.md)
-- [Plugin API](docs/PLUGIN_API.md)
-- [Deployment](docs/DEPLOYMENT.md)
-- [Agent instructions](AGENTS.md)
+- [Разработка](docs/DEVELOPMENT.md)
+- [API Плагинов](docs/PLUGIN_API.md)
+- [Деплой](docs/DEPLOYMENT.md)
+- [Пакеты](docs/PACKAGES.md)
+- [Для нейронок](AGENTS.md)
 
-Examples live in [`examples/`](examples/).
+Примеры [`examples/`](examples/).

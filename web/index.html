@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>YAFF</title>
+  <title>YAM</title>
   <style>
     body { max-width: 900px; margin: 3rem auto; font: 16px system-ui; background: #10131a; color: #e8edf7; }
     button, input, select { padding: .55rem; margin: .2rem; }
@@ -14,10 +14,10 @@
   </style>
 </head>
 <body>
-  <h1>YAFF</h1>
+  <h1>YAM</h1>
   <p id="device"></p>
   <section>
-    <h2>Плагины</h2>
+    <h2>Пакеты</h2>
     <form id="upload"><input type="file" name="package" accept=".yap" required><button>Установить .yap</button></form>
     <div id="plugins"></div>
   </section>
@@ -52,7 +52,7 @@ async function load() {
   try {
     const [pluginData, settings, currentDevice] = await Promise.all([request('/plugins').then(r => r.json()), request('/settings').then(r => r.json()), request('/device').then(r => r.json())]);
     device.textContent = `Колонка: ${currentDevice.model} · ${currentDevice.architecture} · ${currentDevice.features.join(', ')}`;
-    plugins.innerHTML = pluginData.map(pluginRow).join('') || 'Плагинов нет';
+    plugins.innerHTML = pluginData.map(pluginRow).join('') || 'Пакетов нет';
     profile.value = settings.led.profile;
     count.value = settings.led.count;
     binaries.checked = settings.allow_plugin_binaries;

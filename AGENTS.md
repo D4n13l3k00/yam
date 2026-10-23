@@ -1,8 +1,9 @@
-# YAFF agent guide
+# YAM agent guide
 
 ## Repository layout
 
-- `src/main.rs` contains the HTTP runtime, package manager, Lua bridge and hardware adapters.
+- `src/main.rs` builds `yamd`, the HTTP daemon, package manager, Lua bridge and hardware adapters.
+- `src/bin/yam.rs` builds `yam`, the command-line client.
 - `web/index.html` is embedded in the binary with `include_str!`.
 - `examples/` contains source trees for `.yap` packages.
 - `docs/` is the public developer documentation.
@@ -31,13 +32,13 @@ Do not commit `target/`, package archives, device data, credentials or logs.
 - Do not expose a hardware operation to Lua without a manifest permission.
 - Advertise a feature in `DeviceProfile` only when its adapter is detectable and usable.
 - Keep path handling safe: package paths are relative and must reject parent components.
-- Long-running plugins must be cancellable through the shared cancellation token and should call `alice.sleep` or `alice.set` regularly.
+- Long-running Lua packages must be cancellable through the shared cancellation token and should call `alice.sleep` or `alice.set` regularly.
 - Never assume a model-specific sysfs path for an unknown device. Use a profile or the `custom` LED template.
 
-## Plugin conventions
+## Package conventions
 
 - A package is a ZIP archive with `.yap` extension and a root `plugin.toml`.
 - Use a lowercase ID containing only letters, digits, `_` and `-`.
 - Declare the smallest possible permission set.
 - Add `[compatibility]` feature requirements for every hardware-specific API.
-- Test plugin installation through `POST /api/plugins`, then test start and stop through the Web UI or API.
+- Test package installation through `POST /api/plugins`, then test start and stop through the Web UI or CLI.

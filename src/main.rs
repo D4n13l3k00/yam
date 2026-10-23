@@ -29,7 +29,7 @@ use uuid::Uuid;
 struct Args {
     #[arg(long, default_value = "0.0.0.0:8099")]
     listen: String,
-    #[arg(long, default_value = "/opt/yaff")]
+    #[arg(long, default_value = "/opt/yam")]
     data_dir: PathBuf,
     #[arg(long)]
     model: Option<String>,
@@ -85,6 +85,42 @@ struct Manifest {
     settings: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     compatibility: Compatibility,
+    #[serde(default)]
+    launch: Launch,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct Launch {
+    #[serde(default)]
+    kind: LaunchKind,
+    #[serde(default)]
+    mode: LaunchMode,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    args: Vec<String>,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum LaunchKind {
+    #[default]
+    Lua,
+    Binary,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum LaunchMode {
+    #[default]
+    Oneshot,
+    Service,
+}
+impl Launch {
+    fn path<'a>(&'a self, manifest: &'a Manifest) -> &'a str {
+        if self.path.is_empty() {
+            &manifest.entry
+        } else {
+            &self.path
+        }
+    }
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Compatibility {
@@ -294,6 +330,10 @@ impl PluginManager {
         let m: Manifest = toml::from_str(&manifest_text)?;
         validate_id(&m.id)?;
         safe_relative(&m.entry)?;
+        safe_relative(m.launch.path(&m))?;
+        if m.launch.kind == LaunchKind::Binary && !m.permissions.iter().any(|p| p == "exec") {
+            bail!("binary packages require the exec permission")
+        }
         let stage = self.root.join(format!(".install-{}", Uuid::new_v4()));
         fs::create_dir(&stage)?;
         for i in 0..z.len() {
@@ -309,8 +349,14 @@ impl PluginManager {
                 if let Some(p) = dest.parent() {
                     fs::create_dir_all(p)?
                 };
-                let mut o = fs::File::create(dest)?;
+                let mode = f.unix_mode();
+                let mut o = fs::File::create(&dest)?;
                 std::io::copy(&mut f, &mut o)?;
+                #[cfg(unix)]
+                if let Some(mode) = mode {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&dest, fs::Permissions::from_mode(mode))?;
+                }
             }
         }
         let target = self.root.join(&m.id);
@@ -766,11 +812,107 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         }
         lua_device.set("features", lua_features)?;
         globals.set("device", lua_device)?;
-        let source = fs::read_to_string(root.join(&manifest.entry))?;
-        lua.load(&source).set_name(&manifest.entry).exec()?;
+        let launch_path = manifest.launch.path(&manifest).to_string();
+        let source = fs::read_to_string(root.join(&launch_path))?;
+        lua.load(&source).set_name(&launch_path).exec()?;
         Ok(())
     })
     .await??;
+    Ok(())
+}
+
+async fn run_binary(app: App, id: String, cancelled: Arc<AtomicBool>) -> Result<()> {
+    let device = app.device.lock().await.clone();
+    let (manifest, root) = {
+        let plugins = app.plugins.lock().await;
+        if !plugins.enabled.contains(&id) {
+            bail!("package is disabled")
+        }
+        let manifest = plugins.manifest(&id)?;
+        if let Some(reason) = compatibility_error(&manifest, &device) {
+            bail!("package is incompatible: {reason}")
+        }
+        if !manifest
+            .permissions
+            .iter()
+            .any(|permission| permission == "exec")
+        {
+            bail!("binary packages require the exec permission")
+        }
+        (manifest, plugins.root.join(&id))
+    };
+    task::spawn_blocking(move || -> Result<()> {
+        let executable = manifest.launch.path(&manifest).to_string();
+        safe_relative(&executable)?;
+        let log_path = root.join("runtime.log");
+        let log = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)?;
+        let mut child = Command::new(root.join(executable))
+            .args(&manifest.launch.args)
+            .current_dir(&root)
+            .stdout(log.try_clone()?)
+            .stderr(log)
+            .spawn()?;
+        loop {
+            if cancelled.load(Ordering::Relaxed) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(());
+            }
+            if let Some(status) = child.try_wait()? {
+                if status.success() {
+                    return Ok(());
+                }
+                bail!("binary exited with {status}")
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    })
+    .await??;
+    Ok(())
+}
+
+async fn run_package(app: App, id: String, cancelled: Arc<AtomicBool>) -> Result<()> {
+    let kind = app.plugins.lock().await.manifest(&id)?.launch.kind;
+    match kind {
+        LaunchKind::Lua => run_plugin(app, id, "manual".into(), cancelled).await,
+        LaunchKind::Binary => run_binary(app, id, cancelled).await,
+    }
+}
+
+async fn start_package(app: App, id: String) -> Result<()> {
+    let cancelled = {
+        let mut plugins = app.plugins.lock().await;
+        if !plugins.enabled.contains(&id) {
+            bail!("package is disabled")
+        }
+        if let Some(previous) = plugins.running.remove(&id) {
+            previous.store(true, Ordering::Relaxed)
+        }
+        let token = Arc::new(AtomicBool::new(false));
+        plugins.running.insert(id.clone(), token.clone());
+        token
+    };
+    let task_app = app.clone();
+    let task_id = id.clone();
+    tokio::spawn(async move {
+        if let Err(error) = run_package(task_app.clone(), task_id.clone(), cancelled.clone()).await
+        {
+            if !cancelled.load(Ordering::Relaxed) {
+                tracing::error!(package = %task_id, %error, "package execution failed")
+            }
+        }
+        let mut plugins = task_app.plugins.lock().await;
+        if plugins
+            .running
+            .get(&task_id)
+            .is_some_and(|current| Arc::ptr_eq(current, &cancelled))
+        {
+            plugins.running.remove(&task_id);
+        }
+    });
     Ok(())
 }
 
@@ -796,11 +938,16 @@ async fn toggle(
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, ApiError> {
     let mut p = a.plugins.lock().await;
-    p.manifest(&id)?;
-    if !p.enabled.insert(id.clone()) {
+    let manifest = p.manifest(&id)?;
+    let enabled = p.enabled.insert(id.clone());
+    if !enabled {
         p.enabled.remove(&id);
     }
     p.save()?;
+    drop(p);
+    if enabled && manifest.launch.mode == LaunchMode::Service {
+        start_package(a, id).await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 async fn remove(
@@ -814,42 +961,7 @@ async fn invoke(
     State(a): State<App>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, ApiError> {
-    let cancelled = {
-        let mut plugins = a.plugins.lock().await;
-        if !plugins.enabled.contains(&id) {
-            return Err(ApiError(anyhow!("plugin is disabled")));
-        }
-        if let Some(previous) = plugins.running.remove(&id) {
-            previous.store(true, Ordering::Relaxed);
-        }
-        let token = Arc::new(AtomicBool::new(false));
-        plugins.running.insert(id.clone(), token.clone());
-        token
-    };
-    let task_app = a.clone();
-    let task_id = id.clone();
-    tokio::spawn(async move {
-        if let Err(error) = run_plugin(
-            task_app.clone(),
-            task_id.clone(),
-            "manual".into(),
-            cancelled.clone(),
-        )
-        .await
-        {
-            if !cancelled.load(Ordering::Relaxed) {
-                tracing::error!(plugin = %task_id, %error, "plugin execution failed");
-            }
-        }
-        let mut plugins = task_app.plugins.lock().await;
-        if plugins
-            .running
-            .get(&task_id)
-            .is_some_and(|current| Arc::ptr_eq(current, &cancelled))
-        {
-            plugins.running.remove(&task_id);
-        }
-    });
+    start_package(a, id).await?;
     Ok(StatusCode::ACCEPTED)
 }
 async fn stop_plugin(
@@ -859,8 +971,16 @@ async fn stop_plugin(
     if let Some(token) = a.plugins.lock().await.running.remove(&id) {
         token.store(true, Ordering::Relaxed);
     }
-    a.led.off().await?;
+    let _ = a.led.off().await;
     Ok(StatusCode::NO_CONTENT)
+}
+async fn package_logs(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<String, ApiError> {
+    validate_id(&id)?;
+    let path = a.plugins.lock().await.root.join(id).join("runtime.log");
+    Ok(fs::read_to_string(path).unwrap_or_default())
 }
 async fn get_settings(State(a): State<App>) -> Json<Settings> {
     Json(a.settings.lock().await.clone())
@@ -949,6 +1069,24 @@ async fn main() -> Result<()> {
             args.data_dir.join("plugins"),
         )?)),
     };
+    let services = {
+        let device = app.device.lock().await.clone();
+        app.plugins
+            .lock()
+            .await
+            .list(&device)?
+            .into_iter()
+            .filter(|package| {
+                package.enabled && package.manifest.launch.mode == LaunchMode::Service
+            })
+            .map(|package| package.manifest.id)
+            .collect::<Vec<_>>()
+    };
+    for id in services {
+        if let Err(error) = start_package(app.clone(), id.clone()).await {
+            tracing::error!(package = %id, %error, "service package failed to start");
+        }
+    }
     let router = Router::new()
         .route("/", get(index))
         .route("/api/plugins", get(list).post(install))
@@ -956,6 +1094,7 @@ async fn main() -> Result<()> {
         .route("/api/plugins/:id/toggle", post(toggle))
         .route("/api/plugins/:id/invoke", post(invoke))
         .route("/api/plugins/:id/stop", post(stop_plugin))
+        .route("/api/plugins/:id/logs", get(package_logs))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/device", get(get_device).put(put_device))
         .route("/api/led", post(led_set))

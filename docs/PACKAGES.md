@@ -1,0 +1,78 @@
+# Пакеты YAM
+
+YAM использует `.yap` как переносимый пакет для колонки. Это ZIP-архив с манифестом, Lua-скриптами, ресурсами и, при необходимости, исполняемым AArch64/armhf бинарником.
+
+## Манифест
+
+```toml
+id = "ambient-lights"
+name = "Ambient lights"
+version = "1.0.0"
+entry = "launch.lua"
+permissions = ["led"]
+
+[launch]
+kind = "lua"
+mode = "service"
+path = "launch.lua"
+
+[compatibility]
+features = ["led.ring.rgb"]
+```
+
+`entry` обязателен и остаётся точкой входа по умолчанию. Поле `launch.path` переопределяет его для запуска. Все пути должны быть относительными путями внутри пакета.
+
+## Режимы запуска
+
+- `oneshot` — стандартный режим. Пакет запускается командой `yam run <id>` и завершает работу сам.
+- `service` — пакет предназначен для фоновой работы. После включения он запускается автоматически, а после старта `yamd` восстанавливается, если был включён до перезапуска.
+
+Оба режима отслеживаются в `yam ps`. Остановка выполняется `yam stop <id>`. Для Lua остановка происходит при следующем `alice.sleep` или `alice.set`; бинарный процесс получает принудительное завершение.
+
+## Lua-пакет
+
+Укажите `kind = "lua"`. Скрипт получает `alice`, `device` и `event`. Долгоживущие пакеты должны регулярно вызывать `alice.sleep`.
+
+```lua
+while true do
+  alice.set({"#3D7EFF", "#6F40FF", "#21D4FD"})
+  alice.sleep(250)
+end
+```
+
+## Бинарный пакет
+
+Бинарный пакет требует permission `exec` и запускается из корня распакованного пакета. Его stdout и stderr записываются в `runtime.log` пакета.
+
+```toml
+id = "sensor-agent"
+name = "Sensor agent"
+version = "1.0.0"
+entry = "launch.lua"
+permissions = ["exec"]
+
+[launch]
+kind = "binary"
+mode = "service"
+path = "bin/sensor-agent"
+args = ["--interval", "10"]
+```
+
+Бинарник обязан соответствовать архитектуре и libc целевой колонки. Для Station Lite используйте AArch64 musl.
+
+## CLI
+
+`yam` обращается к `yamd` по HTTP. По умолчанию используется `http://127.0.0.1:8099`; другой адрес задаётся через `--url` или `YAM_URL`.
+
+```sh
+yam install ambient-lights.yap
+yam list
+yam enable ambient-lights
+yam run ambient-lights
+yam run -d sensor-agent
+yam ps
+yam logs sensor-agent
+yam stop ambient-lights
+yam disable ambient-lights
+yam rm ambient-lights
+```

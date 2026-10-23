@@ -12,7 +12,7 @@
 ```sh
 cargo fmt
 cargo check
-cargo run -- --listen 127.0.0.1:8099 --data-dir ./data
+cargo run --bin yamd -- --listen 127.0.0.1:8099 --data-dir ./data
 ```
 
 Runtime хранит настройки и пакеты в каталоге из `--data-dir`. Удаляйте только временный каталог разработки, если требуется чистое состояние.
@@ -25,7 +25,7 @@ Runtime хранит настройки и пакеты в каталоге из
 
 ## Профили устройств
 
-При старте YAFF проверяет device-tree, файлы ОС, sysfs и наличие команд. Профиль доступен через `GET /api/device`.
+При старте YAM проверяет device-tree, файлы ОС, sysfs и наличие команд. Профиль доступен через `GET /api/device`.
 
 Поддерживаемые LED-профили:
 
@@ -36,7 +36,7 @@ Runtime хранит настройки и пакеты в каталоге из
 | `sysfs-ring` | `{red,green,blue}:ringN` | задаётся в настройках |
 | `custom` | `path_template` | задаётся в настройках |
 
-Для `custom` шаблон поддерживает `{root}`, `{channel}` и `{index}`. Если настроенное RGB-кольцо доступно, YAFF добавляет в профиль `led.ring.rgb`, `led.ring.<count>` и `led.pattern.v1`.
+Для `custom` шаблон поддерживает `{root}`, `{channel}` и `{index}`. Если настроенное RGB-кольцо доступно, YAM добавляет в профиль `led.ring.rgb`, `led.ring.<count>` и `led.pattern.v1`.
 
 ## Целевые сборки
 
@@ -46,7 +46,7 @@ Station Lite, обнаруженная при разработке, исполь
 docker run --rm -v "$PWD":/home/rust/src -w /home/rust/src messense/rust-musl-cross:aarch64-musl cargo build --release
 ```
 
-Результат: `target/aarch64-unknown-linux-musl/release/yaff`.
+Результат: `target/aarch64-unknown-linux-musl/release/yamd`.
 
 Для armhf используйте образ или toolchain для armv7 musl и собирайте бинарник `armv7-unknown-linux-musleabihf`.
 
