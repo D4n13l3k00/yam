@@ -32,6 +32,8 @@ enum Command {
         id: String,
         #[arg(short, long)]
         detach: bool,
+        #[arg(last = true)]
+        args: Vec<String>,
     },
     Stop {
         id: String,
@@ -107,10 +109,11 @@ fn main() -> Result<()> {
         }
         Command::Enable { id } => set_enabled(&client, &cli.url, &id, true)?,
         Command::Disable { id } => set_enabled(&client, &cli.url, &id, false)?,
-        Command::Run { id, detach } => {
+        Command::Run { id, detach, args } => {
             print_response(
                 client
                     .post(endpoint(&cli.url, &format!("/api/plugins/{id}/invoke")))
+                    .json(&serde_json::json!({"args": args}))
                     .send()?,
             )?;
             if !detach {

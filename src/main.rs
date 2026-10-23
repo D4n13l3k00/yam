@@ -184,6 +184,11 @@ struct Frame {
     #[serde(default = "frame_delay")]
     delay_ms: u64,
 }
+#[derive(Deserialize)]
+struct Invocation {
+    #[serde(default)]
+    args: Vec<String>,
+}
 fn frame_delay() -> u64 {
     100
 }
@@ -898,7 +903,12 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
     Ok(())
 }
 
-async fn run_binary(app: App, id: String, cancelled: Arc<AtomicBool>) -> Result<()> {
+async fn run_binary(
+    app: App,
+    id: String,
+    invocation_args: Vec<String>,
+    cancelled: Arc<AtomicBool>,
+) -> Result<()> {
     let device = app.device.lock().await.clone();
     let (manifest, root) = {
         let plugins = app.plugins.lock().await;
@@ -928,6 +938,7 @@ async fn run_binary(app: App, id: String, cancelled: Arc<AtomicBool>) -> Result<
             .open(log_path)?;
         let mut child = Command::new(root.join(executable))
             .args(&manifest.launch.args)
+            .args(invocation_args)
             .current_dir(&root)
             .stdout(log.try_clone()?)
             .stderr(log)
@@ -951,19 +962,33 @@ async fn run_binary(app: App, id: String, cancelled: Arc<AtomicBool>) -> Result<
     Ok(())
 }
 
-async fn run_package(app: App, id: String, cancelled: Arc<AtomicBool>) -> Result<()> {
+async fn run_package(
+    app: App,
+    id: String,
+    invocation_args: Vec<String>,
+    cancelled: Arc<AtomicBool>,
+) -> Result<()> {
     let kind = app.plugins.lock().await.manifest(&id)?.launch.kind;
     match kind {
         LaunchKind::Lua => run_plugin(app, id, "manual".into(), cancelled).await,
-        LaunchKind::Binary => run_binary(app, id, cancelled).await,
+        LaunchKind::Binary => run_binary(app, id, invocation_args, cancelled).await,
     }
 }
 
-async fn start_package(app: App, id: String) -> Result<()> {
+async fn start_package(app: App, id: String, invocation_args: Vec<String>) -> Result<()> {
     let cancelled = {
         let mut plugins = app.plugins.lock().await;
         if !plugins.enabled.contains(&id) {
             bail!("package is disabled")
+        }
+        let manifest = plugins.manifest(&id)?;
+        if !invocation_args.is_empty() {
+            if manifest.launch.kind != LaunchKind::Binary {
+                bail!("only binary packages accept invocation arguments")
+            }
+            if manifest.launch.mode != LaunchMode::Oneshot {
+                bail!("invocation arguments are only supported for oneshot packages")
+            }
         }
         if let Some(previous) = plugins.running.remove(&id) {
             previous.store(true, Ordering::Relaxed)
@@ -975,7 +1000,13 @@ async fn start_package(app: App, id: String) -> Result<()> {
     let task_app = app.clone();
     let task_id = id.clone();
     tokio::spawn(async move {
-        if let Err(error) = run_package(task_app.clone(), task_id.clone(), cancelled.clone()).await
+        if let Err(error) = run_package(
+            task_app.clone(),
+            task_id.clone(),
+            invocation_args,
+            cancelled.clone(),
+        )
+        .await
         {
             if !cancelled.load(Ordering::Relaxed) {
                 tracing::error!(package = %task_id, %error, "package execution failed")
@@ -1023,7 +1054,7 @@ async fn toggle(
     p.save()?;
     drop(p);
     if enabled && manifest.launch.mode == LaunchMode::Service {
-        start_package(a, id).await?;
+        start_package(a, id, Vec::new()).await?;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1037,8 +1068,14 @@ async fn remove(
 async fn invoke(
     State(a): State<App>,
     AxumPath(id): AxumPath<String>,
+    invocation: Option<Json<Invocation>>,
 ) -> Result<StatusCode, ApiError> {
-    start_package(a, id).await?;
+    start_package(
+        a,
+        id,
+        invocation.map(|value| value.0.args).unwrap_or_default(),
+    )
+    .await?;
     Ok(StatusCode::ACCEPTED)
 }
 async fn stop_plugin(
@@ -1163,7 +1200,7 @@ async fn main() -> Result<()> {
             .collect::<Vec<_>>()
     };
     for id in services {
-        if let Err(error) = start_package(app.clone(), id.clone()).await {
+        if let Err(error) = start_package(app.clone(), id.clone(), Vec::new()).await {
             tracing::error!(package = %id, %error, "service package failed to start");
         }
     }
