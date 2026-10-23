@@ -40,6 +40,8 @@ jobs:
           -w /home/rust/src
           messense/rust-musl-cross:aarch64-musl
           cargo build --release --locked --bin yamd
+      - name: Make Docker build output writable
+        run: chmod -R a+rwX target/aarch64-unknown-linux-musl
       - name: Compress yamd
         uses: crazy-max/ghaction-upx@v4
         with:
