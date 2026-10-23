@@ -7,6 +7,12 @@ Linux / колонка:
 curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sh
 ```
 
+macOS arm64 / колонка:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sh
+```
+
 Windows CLI:
 
 ```powershell

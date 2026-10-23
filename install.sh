@@ -6,9 +6,10 @@ BIN_DIR=${2:-${YAM_BIN_DIR:-$HOME/.local/bin}}
 REPOSITORY=https://github.com/nyakokitsu/yam
 DEVICE_PREFIX=/data/quazar/yam
 
-case "$(uname -m)" in
-  x86_64|amd64) ;;
-  *) echo "Unsupported host architecture $(uname -m); install the CLI on an x86_64 computer." >&2; exit 3 ;;
+case "$(uname -s):$(uname -m)" in
+  Linux:x86_64|Linux:amd64) CLI_ASSET=yam-x86_64-unknown-linux-musl ;;
+  Darwin:arm64|Darwin:aarch64) CLI_ASSET=yam-aarch64-apple-darwin ;;
+  *) echo "Unsupported host platform $(uname -s) $(uname -m)." >&2; exit 3 ;;
 esac
 
 case "$VERSION" in
@@ -67,13 +68,13 @@ if [ -z "$DEVICE" ]; then
 fi
 
 download "$RELEASE_URL/SHA256SUMS" "$tmpdir/SHA256SUMS"
-download "$RELEASE_URL/yam-x86_64-unknown-linux-musl" "$tmpdir/yam-x86_64-unknown-linux-musl"
+download "$RELEASE_URL/$CLI_ASSET" "$tmpdir/$CLI_ASSET"
 download "$RELEASE_URL/yamd-aarch64-linux-musl" "$tmpdir/yamd-aarch64-linux-musl"
-verify "$tmpdir/yam-x86_64-unknown-linux-musl"
+verify "$tmpdir/$CLI_ASSET"
 verify "$tmpdir/yamd-aarch64-linux-musl"
 
 mkdir -p "$BIN_DIR"
-install -m 0755 "$tmpdir/yam-x86_64-unknown-linux-musl" "$BIN_DIR/yam"
+install -m 0755 "$tmpdir/$CLI_ASSET" "$BIN_DIR/yam"
 adb -s "$DEVICE" shell "mkdir -p $DEVICE_PREFIX/bin $DEVICE_PREFIX/data"
 adb -s "$DEVICE" push "$tmpdir/yamd-aarch64-linux-musl" "$DEVICE_PREFIX/bin/yamd.new" >/dev/null
 adb -s "$DEVICE" shell "chmod 0755 $DEVICE_PREFIX/bin/yamd.new; if [ -f $DEVICE_PREFIX/yamd.pid ] && kill -0 \$(cat $DEVICE_PREFIX/yamd.pid) 2>/dev/null; then kill \$(cat $DEVICE_PREFIX/yamd.pid); fi; mv $DEVICE_PREFIX/bin/yamd.new $DEVICE_PREFIX/bin/yamd; start-stop-daemon --start --background --make-pidfile --pidfile $DEVICE_PREFIX/yamd.pid --startas $DEVICE_PREFIX/bin/yamd -- --data-dir $DEVICE_PREFIX/data"

@@ -2,7 +2,7 @@
 
 ## Installer
 
-Installer скачивает последний GitHub Release и проверяет `SHA256SUMS`. Он устанавливает CLI на Linux-компьютер в `~/.local/bin/yam`, находит колонку через `adb devices` (либо запрашивает её IP) и загружает/запускает `yamd` на колонке в `/data/quazar/yam`.
+Installer скачивает последний GitHub Release и проверяет `SHA256SUMS`. Он устанавливает CLI на Linux x86_64 или macOS arm64-компьютер в `~/.local/bin/yam`, находит колонку через `adb devices` (либо запрашивает её IP) и загружает/запускает `yamd` на колонке в `/data/quazar/yam`.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sh
