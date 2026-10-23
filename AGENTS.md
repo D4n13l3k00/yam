@@ -8,6 +8,7 @@
 - `examples/` contains source trees for `.yap` packages.
 - `docs/` is the public developer documentation.
 - `install.sh` installs a prebuilt Linux binary.
+- `tools/convert_apkg.py` converts an apkg repository package into `.yap`.
 
 ## Required checks
 

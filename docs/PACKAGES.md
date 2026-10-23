@@ -60,6 +60,22 @@ args = ["--interval", "10"]
 
 Бинарник обязан соответствовать архитектуре и libc целевой колонки. Для Station Lite используйте AArch64 musl.
 
+## Конвертация apkg
+
+Ветка `pkg` репозитория `initialfox/yandex-station-repo` содержит `packages.json` и tar-архивы пакетов. Скрипт `tools/convert_apkg.py` загружает индекс, проверяет MD5, безопасно распаковывает выбранный tar, определяет исполняемый файл по полям `check`, `dest` и `bin`, затем создаёт `.yap` с бинарным launch-манифестом.
+
+```sh
+python3 tools/convert_apkg.py \
+  --index https://raw.githubusercontent.com/initialfox/yandex-station-repo/pkg/packages.json \
+  --package htop \
+  --output htop.yap
+yam install htop.yap
+yam enable htop
+yam run htop
+```
+
+Для уже скачанных tar-архивов используйте `--asset-dir ./assets`. Если автоматический поиск исполняемого файла неоднозначен, задайте путь внутри tar через `--program bin/htop`. Конвертер не переносит старые абсолютные `dest` пути: YAM запускает программу только из каталога пакета.
+
 ## CLI
 
 `yam` обращается к `yamd` по HTTP. По умолчанию используется `http://127.0.0.1:8099`; другой адрес задаётся через `--url` или `YAM_URL`.

@@ -39,7 +39,27 @@ struct Args {
 struct Settings {
     led: LedSettings,
     #[serde(default)]
+    web: WebSettings,
+    #[serde(default)]
     allow_plugin_binaries: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WebSettings {
+    #[serde(default = "default_true")]
+    ui: bool,
+    #[serde(default = "default_true")]
+    api: bool,
+}
+fn default_true() -> bool {
+    true
+}
+impl Default for WebSettings {
+    fn default() -> Self {
+        Self {
+            ui: true,
+            api: true,
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LedSettings {
@@ -66,6 +86,7 @@ impl Default for Settings {
                 sysfs_root: default_led_root(),
                 path_template: None,
             },
+            web: WebSettings::default(),
             allow_plugin_binaries: false,
         }
     }
@@ -468,6 +489,9 @@ fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
     if arch.starts_with("arm") {
         features.push("arch.armhf".into())
     };
+    if arch == "aarch64" {
+        features.push("arch.aarch64".into())
+    }
     if model == "unknown" {
         model = "unknown".into()
     };
@@ -1004,6 +1028,9 @@ async fn put_settings(
     if s.led.count == 0 || s.led.count > 128 {
         return Err(ApiError(anyhow!("LED count must be 1..128")));
     };
+    if s.web.ui && !s.web.api {
+        return Err(ApiError(anyhow!("web.ui requires web.api")));
+    }
     fs::write(a.root.join("settings.toml"), toml::to_string_pretty(&s)?)?;
     *a.settings.lock().await = s.clone();
     *a.led.settings.lock().await = s.led;
@@ -1087,20 +1114,32 @@ async fn main() -> Result<()> {
             tracing::error!(package = %id, %error, "service package failed to start");
         }
     }
-    let router = Router::new()
-        .route("/", get(index))
-        .route("/api/plugins", get(list).post(install))
-        .route("/api/plugins/:id", delete(remove))
-        .route("/api/plugins/:id/toggle", post(toggle))
-        .route("/api/plugins/:id/invoke", post(invoke))
-        .route("/api/plugins/:id/stop", post(stop_plugin))
-        .route("/api/plugins/:id/logs", get(package_logs))
-        .route("/api/settings", get(get_settings).put(put_settings))
-        .route("/api/device", get(get_device).put(put_device))
-        .route("/api/led", post(led_set))
-        .route("/api/led/off", post(led_off))
-        .layer(TraceLayer::new_for_http())
-        .with_state(app);
+    let web = app.settings.lock().await.web.clone();
+    if web.ui && !web.api {
+        bail!("web.ui requires web.api")
+    }
+    if !web.ui && !web.api {
+        tracing::info!("web interface is disabled");
+        std::future::pending::<()>().await;
+    }
+    let mut router = Router::new();
+    if web.ui {
+        router = router.route("/", get(index));
+    }
+    if web.api {
+        router = router
+            .route("/api/plugins", get(list).post(install))
+            .route("/api/plugins/:id", delete(remove))
+            .route("/api/plugins/:id/toggle", post(toggle))
+            .route("/api/plugins/:id/invoke", post(invoke))
+            .route("/api/plugins/:id/stop", post(stop_plugin))
+            .route("/api/plugins/:id/logs", get(package_logs))
+            .route("/api/settings", get(get_settings).put(put_settings))
+            .route("/api/device", get(get_device).put(put_device))
+            .route("/api/led", post(led_set))
+            .route("/api/led/off", post(led_off));
+    }
+    let router = router.layer(TraceLayer::new_for_http()).with_state(app);
     let l = TcpListener::bind(&args.listen).await?;
     tracing::info!("web UI: http://{}", args.listen);
     axum::serve(l, router).await?;
