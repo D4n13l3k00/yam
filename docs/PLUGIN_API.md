@@ -4,7 +4,7 @@
 
 ## Структура пакета
 
-`.yap` — ZIP-архив. В его корне должен находиться `plugin.toml`.
+`.yap` — ZIP или gzip-сжатый TAR-архив. В его корне должен находиться `plugin.toml`.
 
 ```text
 my-plugin.yap
@@ -55,10 +55,37 @@ zip -r ../my-plugin.yap plugin.toml main.lua patterns sounds bin
 | `audio` | `alice.audio.play(relative_path)` | `audio.play.aplay` |
 | `bluetooth` | `alice.bluetooth.status()`, `power(bool)`, `scan(bool)`, `pair(mac)`, `connect(mac)`, `disconnect(mac)`, `remove(mac)` | `bluetooth.bluez` |
 | `display` | `alice.display.backlights()`, `set_backlight(name, value)` | `display.backlight` |
+| `sensors` | `alice.sensors.list()`, `read(id)` | `sensor.ambient_light.iio`, `sensor.temperature.sysfs` или `battery.sysfs` |
+| `sensors.control` | `alice.sensors.configure_ambient_light(device, gain, integration_ms)` | `sensor.ambient_light.iio` |
+| `clock` | `alice.clock.available()`, `time("HH:MM", brightness)`, `segments(levels)`, `off()` | `display.clock.segment.v1` |
+| `input` | `alice.input.devices()` | `input.evdev` |
 | `system` | `alice.system.hostname()`, `uptime()`, `meminfo()` | нет |
 | `exec` | `alice.exec(program, args)` | runtime-настройка `allow_plugin_binaries = true` |
 
 `alice.set` принимает ровно `device.led_count` строк формата `#RRGGBB`. `alice.sleep` принимает 0–60000 мс и является точкой отмены анимации.
+
+### Датчики
+
+`alice.sensors.list()` возвращает массив таблиц `{ id, kind, unit }`, а `alice.sensors.read(id)` — таблицу с дополнительным числовым полем `value`. Поддерживаются обнаруженные в sysfs датчики освещённости IIO, температурные thermal/hwmon и аккумуляторы power_supply. Температура нормализуется в градусы Цельсия, даже когда драйвер возвращает миллиградусы.
+
+Управление gain и временем интеграции опционально и требует отдельный permission `sensors.control`; допустимы gain `1, 3, 6, 9, 18` и `25, 50, 100, 200, 400` мс. Например:
+
+```lua
+for _, sensor in ipairs(alice.sensors.list()) do
+  if sensor.kind == "ambient_light" then
+    local reading = alice.sensors.read(sensor.id)
+    alice.sensors.configure_ambient_light(sensor.id:match("^ambient%-light:(.+)$"), 18, 400)
+  end
+end
+```
+
+### Сегментные часы
+
+На Mini 2 с физическим clock-дисплеем YAM обнаруживает `display.clock.segment.v1`. `alice.clock.time("07:35", 170)` записывает четыре цифры и разделитель; яркость — `0..255`, по умолчанию `170`. `segments` принимает таблицу с уровнями сегментов, например `{ A1 = 255, B1 = 255, PLUS1 = 64 }`; доступные имена — `A..G` с позициями `1..4`, `PLUS1`, `PLUS2`, `MINUS`, `DEGREE`.
+
+Часы управляются системным platformd одновременно с пакетами, поэтому package должен регулярно перерисовывать свой кадр, если ему нужно удерживать его на экране.
+
+Daemon также предоставляет `GET /api/sensors`, `GET /api/clock` и `PUT /api/clock`. CLI-эквиваленты: `yam sensors`, `yam clock status`, `yam clock set 07:35 --brightness 170`, `yam clock off`.
 
 ## Совместимость
 

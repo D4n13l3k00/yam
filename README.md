@@ -16,6 +16,7 @@ cargo run --bin yamd -- --data-dir ./data
 - [Деплой](docs/DEPLOYMENT.md)
 - [Пакеты](docs/PACKAGES.md)
 - [Реестр пакетов](docs/REGISTRY.md)
+- [Аппаратные возможности](docs/PLATFORM_HARDWARE.md)
 - [Для нейронок](AGENTS.md)
 
 Примеры [`examples/`](examples/).

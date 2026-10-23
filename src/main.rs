@@ -158,6 +158,36 @@ struct DeviceProfile {
     features: Vec<String>,
     source: String,
 }
+#[derive(Debug, Clone)]
+struct Sensor {
+    id: String,
+    kind: String,
+    path: PathBuf,
+    unit: String,
+}
+#[derive(Debug, Serialize)]
+struct SensorInfo {
+    id: String,
+    kind: String,
+    unit: String,
+    value: Option<f64>,
+}
+#[derive(Debug, Serialize)]
+struct ClockInfo {
+    available: bool,
+    segments: Vec<String>,
+}
+#[derive(Debug, Deserialize)]
+struct ClockRequest {
+    #[serde(default)]
+    time: Option<String>,
+    #[serde(default)]
+    brightness: Option<u8>,
+    #[serde(default)]
+    segments: Option<HashMap<String, u8>>,
+    #[serde(default)]
+    off: bool,
+}
 #[derive(Debug, Clone, Serialize)]
 struct PluginInfo {
     manifest: Manifest,
@@ -544,6 +574,19 @@ fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
     if Path::new("/sys/class/input").exists() {
         features.push("input.evdev".into())
     }
+    let sensors = discover_sensors();
+    if sensors.iter().any(|sensor| sensor.kind == "ambient_light") {
+        features.push("sensor.ambient_light.iio".into())
+    }
+    if sensors.iter().any(|sensor| sensor.kind == "temperature") {
+        features.push("sensor.temperature.sysfs".into())
+    }
+    if sensors.iter().any(|sensor| sensor.kind == "battery") {
+        features.push("battery.sysfs".into())
+    }
+    if clock_available() {
+        features.push("display.clock.segment.v1".into())
+    }
     if arch.starts_with("arm") {
         features.push("arch.armhf".into())
     };
@@ -559,6 +602,171 @@ fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
         features,
         source: "auto (override: data-dir/device.toml or --model)".into(),
     }
+}
+fn read_trimmed(path: &Path) -> Result<String> {
+    Ok(fs::read_to_string(path)?.trim().to_string())
+}
+fn sorted_directories(path: &Path) -> Vec<PathBuf> {
+    let mut entries = fs::read_dir(path)
+        .into_iter()
+        .flat_map(|entries| entries.flatten())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries
+}
+fn discover_sensors() -> Vec<Sensor> {
+    let mut sensors = Vec::new();
+    for device in sorted_directories(Path::new("/sys/bus/iio/devices")) {
+        let value = device.join("in_intensity_input");
+        if value.is_file() {
+            let name = device.file_name().unwrap_or_default().to_string_lossy();
+            sensors.push(Sensor {
+                id: format!("ambient-light:{name}"),
+                kind: "ambient_light".into(),
+                path: value,
+                unit: "lux".into(),
+            });
+        }
+    }
+    for zone in sorted_directories(Path::new("/sys/class/thermal")) {
+        let value = zone.join("temp");
+        if value.is_file() {
+            let name = zone.file_name().unwrap_or_default().to_string_lossy();
+            sensors.push(Sensor {
+                id: format!("temperature:{name}"),
+                kind: "temperature".into(),
+                path: value,
+                unit: "celsius".into(),
+            });
+        }
+    }
+    for device in sorted_directories(Path::new("/sys/class/hwmon")) {
+        let name = read_trimmed(&device.join("name")).unwrap_or_else(|_| {
+            device
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        });
+        if let Ok(entries) = fs::read_dir(&device) {
+            for entry in entries.flatten() {
+                let file_name = entry.file_name().to_string_lossy().to_string();
+                if file_name.starts_with("temp") && file_name.ends_with("_input") {
+                    sensors.push(Sensor {
+                        id: format!("temperature:{name}:{file_name}"),
+                        kind: "temperature".into(),
+                        path: entry.path(),
+                        unit: "celsius".into(),
+                    });
+                }
+            }
+        }
+    }
+    for supply in sorted_directories(Path::new("/sys/class/power_supply")) {
+        let value = supply.join("capacity");
+        if value.is_file() {
+            let name = supply.file_name().unwrap_or_default().to_string_lossy();
+            sensors.push(Sensor {
+                id: format!("battery:{name}"),
+                kind: "battery".into(),
+                path: value,
+                unit: "percent".into(),
+            });
+        }
+    }
+    sensors
+}
+fn sensor_value(sensor: &Sensor) -> Result<f64> {
+    let mut value: f64 = read_trimmed(&sensor.path)?.parse()?;
+    if sensor.kind == "temperature" && value.abs() > 1_000.0 {
+        value /= 1_000.0;
+    }
+    Ok(value)
+}
+fn configured_light_sensor(name: &str) -> Result<PathBuf> {
+    let sensor = discover_sensors()
+        .into_iter()
+        .find(|sensor| sensor.id == format!("ambient-light:{name}"))
+        .context("ambient light sensor not found")?;
+    Ok(sensor
+        .path
+        .parent()
+        .context("invalid ambient light sensor path")?
+        .to_path_buf())
+}
+fn clock_path(segment: &str) -> PathBuf {
+    Path::new("/sys/class/leds").join(format!("mini2:white:clock{segment}/brightness"))
+}
+fn clock_segments() -> Vec<String> {
+    let mut segments = Vec::new();
+    for position in 1..=4 {
+        for part in ["A", "B", "C", "D", "E", "F", "G"] {
+            segments.push(format!("{part}{position}"));
+        }
+    }
+    segments.extend([
+        "PLUS1".into(),
+        "PLUS2".into(),
+        "MINUS".into(),
+        "DEGREE".into(),
+    ]);
+    segments
+}
+fn clock_available() -> bool {
+    clock_segments()
+        .iter()
+        .all(|segment| clock_path(segment).is_file())
+}
+fn clock_write(segments: &HashMap<String, u8>) -> Result<()> {
+    if !clock_available() {
+        bail!("segment clock is not available")
+    }
+    for segment in clock_segments() {
+        let value = segments.get(&segment).copied().unwrap_or(0);
+        fs::write(clock_path(&segment), value.to_string())?;
+    }
+    Ok(())
+}
+fn validate_clock_segments(segments: &HashMap<String, u8>) -> Result<()> {
+    let valid = clock_segments().into_iter().collect::<HashSet<_>>();
+    if segments.keys().any(|segment| !valid.contains(segment)) {
+        bail!("unknown clock segment")
+    }
+    Ok(())
+}
+fn clock_time(value: &str, brightness: u8) -> Result<()> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 5
+        || bytes[2] != b':'
+        || ![bytes[0], bytes[1], bytes[3], bytes[4]]
+            .iter()
+            .all(u8::is_ascii_digit)
+    {
+        bail!("clock time must have HH:MM format")
+    }
+    let digits: HashMap<u8, &[&str]> = HashMap::from([
+        (b'0', &["A", "B", "C", "D", "E", "F"] as &[&str]),
+        (b'1', &["B", "C"]),
+        (b'2', &["A", "B", "G", "E", "D"]),
+        (b'3', &["A", "B", "C", "D", "G"]),
+        (b'4', &["F", "G", "B", "C"]),
+        (b'5', &["A", "F", "G", "C", "D"]),
+        (b'6', &["A", "F", "G", "E", "C", "D"]),
+        (b'7', &["A", "B", "C"]),
+        (b'8', &["A", "B", "C", "D", "E", "F", "G"]),
+        (b'9', &["A", "B", "C", "D", "F", "G"]),
+    ]);
+    let mut segments = HashMap::new();
+    for (index, digit) in [bytes[0], bytes[1], bytes[3], bytes[4]].iter().enumerate() {
+        for part in digits.get(digit).context("invalid clock digit")?.iter() {
+            segments.insert(format!("{part}{}", index + 1), brightness);
+        }
+    }
+    segments.insert("PLUS1".into(), brightness);
+    segments.insert("PLUS2".into(), brightness);
+    clock_write(&segments)
 }
 fn validate_id(s: &str) -> Result<()> {
     if s.is_empty()
@@ -838,6 +1046,108 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
             )?;
             api.set("display", display)?;
         }
+        if permissions.contains("sensors") {
+            let sensors = lua.create_table()?;
+            sensors.set(
+                "list",
+                lua.create_function(|lua, ()| {
+                    let result = lua.create_table()?;
+                    for (index, sensor) in discover_sensors().iter().enumerate() {
+                        let item = lua.create_table()?;
+                        item.set("id", sensor.id.as_str())?;
+                        item.set("kind", sensor.kind.as_str())?;
+                        item.set("unit", sensor.unit.as_str())?;
+                        result.set(index + 1, item)?;
+                    }
+                    Ok(result)
+                })?,
+            )?;
+            sensors.set(
+                "read",
+                lua.create_function(|lua, id: String| {
+                    let sensor = discover_sensors()
+                        .into_iter()
+                        .find(|sensor| sensor.id == id)
+                        .context("sensor not found")
+                        .map_err(mlua::Error::external)?;
+                    let result = lua.create_table()?;
+                    result.set("id", sensor.id.as_str())?;
+                    result.set("kind", sensor.kind.as_str())?;
+                    result.set("unit", sensor.unit.as_str())?;
+                    result.set(
+                        "value",
+                        sensor_value(&sensor).map_err(mlua::Error::external)?,
+                    )?;
+                    Ok(result)
+                })?,
+            )?;
+            if permissions.contains("sensors.control") {
+                sensors.set(
+                    "configure_ambient_light",
+                    lua.create_function(|_, (name, gain, integration_ms): (String, u8, u16)| {
+                        if ![1, 3, 6, 9, 18].contains(&gain) {
+                            return Err(mlua::Error::external("gain must be 1, 3, 6, 9 or 18"));
+                        }
+                        if ![25, 50, 100, 200, 400].contains(&integration_ms) {
+                            return Err(mlua::Error::external(
+                                "integration time must be 25, 50, 100, 200 or 400 ms",
+                            ));
+                        }
+                        let path = configured_light_sensor(&name).map_err(mlua::Error::external)?;
+                        fs::write(path.join("in_intensity_hardwaregain"), gain.to_string())
+                            .map_err(mlua::Error::external)?;
+                        fs::write(
+                            path.join("in_intensity_integration_time"),
+                            format!("0.{integration_ms:03}"),
+                        )
+                        .map_err(mlua::Error::external)
+                    })?,
+                )?;
+            }
+            api.set("sensors", sensors)?;
+        }
+        if permissions.contains("clock") {
+            let clock = lua.create_table()?;
+            clock.set(
+                "available",
+                lua.create_function(|_, ()| Ok(clock_available()))?,
+            )?;
+            clock.set(
+                "segments",
+                lua.create_function(|_, levels: mlua::Table| {
+                    let mut frame = HashMap::new();
+                    for pair in levels.pairs::<String, u8>() {
+                        let (segment, value) = pair?;
+                        frame.insert(segment, value);
+                    }
+                    validate_clock_segments(&frame).map_err(mlua::Error::external)?;
+                    clock_write(&frame).map_err(mlua::Error::external)
+                })?,
+            )?;
+            clock.set(
+                "time",
+                lua.create_function(|_, (time, brightness): (String, Option<u8>)| {
+                    clock_time(&time, brightness.unwrap_or(170)).map_err(mlua::Error::external)
+                })?,
+            )?;
+            clock.set(
+                "off",
+                lua.create_function(|_, ()| {
+                    clock_write(&HashMap::new()).map_err(mlua::Error::external)
+                })?,
+            )?;
+            api.set("clock", clock)?;
+        }
+        if permissions.contains("input") {
+            let input = lua.create_table()?;
+            input.set(
+                "devices",
+                lua.create_function(|_, ()| {
+                    fs::read_to_string("/proc/bus/input/devices").map_err(mlua::Error::external)
+                })?,
+            )?;
+            api.set("input", input)?;
+        }
         if permissions.contains("system") {
             let system = lua.create_table()?;
             system.set(
@@ -1102,6 +1412,38 @@ async fn get_settings(State(a): State<App>) -> Json<Settings> {
 async fn get_device(State(a): State<App>) -> Json<DeviceProfile> {
     Json(a.device.lock().await.clone())
 }
+async fn get_sensors() -> Json<Vec<SensorInfo>> {
+    Json(
+        discover_sensors()
+            .into_iter()
+            .map(|sensor| SensorInfo {
+                value: sensor_value(&sensor).ok(),
+                id: sensor.id,
+                kind: sensor.kind,
+                unit: sensor.unit,
+            })
+            .collect(),
+    )
+}
+async fn get_clock() -> Json<ClockInfo> {
+    Json(ClockInfo {
+        available: clock_available(),
+        segments: clock_segments(),
+    })
+}
+async fn put_clock(Json(request): Json<ClockRequest>) -> Result<StatusCode, ApiError> {
+    if request.off {
+        clock_write(&HashMap::new())?;
+    } else if let Some(time) = request.time {
+        clock_time(&time, request.brightness.unwrap_or(170))?;
+    } else if let Some(segments) = request.segments {
+        validate_clock_segments(&segments)?;
+        clock_write(&segments)?;
+    } else {
+        return Err(ApiError(anyhow!("pass time, segments or off=true")));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
 async fn put_device(
     State(a): State<App>,
     Json(d): Json<DeviceProfile>,
@@ -1226,6 +1568,8 @@ async fn main() -> Result<()> {
             .route("/api/plugins/:id/logs", get(package_logs))
             .route("/api/settings", get(get_settings).put(put_settings))
             .route("/api/device", get(get_device).put(put_device))
+            .route("/api/sensors", get(get_sensors))
+            .route("/api/clock", get(get_clock).put(put_clock))
             .route("/api/led", post(led_set))
             .route("/api/led/off", post(led_off));
     }

@@ -52,6 +52,11 @@ enum Command {
         command: RegistryCommand,
     },
     Device,
+    Sensors,
+    Clock {
+        #[command(subcommand)]
+        command: ClockCommand,
+    },
     Led {
         #[command(subcommand)]
         command: LedCommand,
@@ -67,6 +72,17 @@ enum RegistryCommand {
 #[derive(Subcommand)]
 enum LedCommand {
     Set { colors: Vec<String> },
+    Off,
+}
+
+#[derive(Subcommand)]
+enum ClockCommand {
+    Status,
+    Set {
+        time: String,
+        #[arg(short, long, default_value_t = 170)]
+        brightness: u8,
+    },
     Off,
 }
 
@@ -175,6 +191,24 @@ fn main() -> Result<()> {
             }
         }
         Command::Device => print_response(client.get(endpoint(&cli.url, "/api/device")).send()?)?,
+        Command::Sensors => print_response(client.get(endpoint(&cli.url, "/api/sensors")).send()?)?,
+        Command::Clock { command } => match command {
+            ClockCommand::Status => {
+                print_response(client.get(endpoint(&cli.url, "/api/clock")).send()?)?
+            }
+            ClockCommand::Set { time, brightness } => print_response(
+                client
+                    .put(endpoint(&cli.url, "/api/clock"))
+                    .json(&serde_json::json!({"time": time, "brightness": brightness}))
+                    .send()?,
+            )?,
+            ClockCommand::Off => print_response(
+                client
+                    .put(endpoint(&cli.url, "/api/clock"))
+                    .json(&serde_json::json!({"off": true}))
+                    .send()?,
+            )?,
+        },
         Command::Led { command } => match command {
             LedCommand::Set { colors } => print_response(
                 client
