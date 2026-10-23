@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Determine release version
+        id: version
+        shell: bash
+        run: |
+          version=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.name == "yam") | .version')
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="v${version}"
+          fi
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]] || {
+            echo "Release tag must be SemVer, got: $tag" >&2
+            exit 1
+          }
+          [[ "$tag" == "v${version}" ]] || {
+            echo "Tag $tag does not match Cargo.toml version $version" >&2
+            exit 1
+          }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Validate source
+        run: |
+          cargo fmt --check
+          cargo test --locked
+          cargo check --locked --features registry --bin yam-registry
+          sh -n install.sh
+      - name: Build AArch64 musl release binaries
+        run: >-
+          docker run --rm
+          -v "$GITHUB_WORKSPACE":/home/rust/src
+          -w /home/rust/src
+          messense/rust-musl-cross:aarch64-musl
+          cargo build --release --locked
+      - name: Package assets and checksums
+        run: |
+          mkdir -p dist
+          cp target/aarch64-unknown-linux-musl/release/yamd "dist/yamd-aarch64-linux-musl"
+          cp target/aarch64-unknown-linux-musl/release/yam "dist/yam-aarch64-linux-musl"
+          chmod 0755 dist/yamd-aarch64-linux-musl dist/yam-aarch64-linux-musl
+          (cd dist && sha256sum yamd-aarch64-linux-musl yam-aarch64-linux-musl > SHA256SUMS)
+      - name: Create GitHub release
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            dist/yamd-aarch64-linux-musl \
+            dist/yam-aarch64-linux-musl \
+            dist/SHA256SUMS \
+            --title "YAM ${{ steps.version.outputs.version }}" \
+            --generate-notes
