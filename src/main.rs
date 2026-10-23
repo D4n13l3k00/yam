@@ -696,9 +696,6 @@ fn configured_light_sensor(name: &str) -> Result<PathBuf> {
         .context("invalid ambient light sensor path")?
         .to_path_buf())
 }
-fn clock_path(segment: &str) -> PathBuf {
-    Path::new("/sys/class/leds").join(format!("mini2:white:clock{segment}/brightness"))
-}
 fn clock_segments() -> Vec<String> {
     let mut segments = Vec::new();
     for position in 1..=4 {
@@ -714,18 +711,33 @@ fn clock_segments() -> Vec<String> {
     ]);
     segments
 }
+fn clock_prefix() -> Option<String> {
+    let leds = fs::read_dir("/sys/class/leds").ok()?;
+    let suffix = "clockA1";
+    let prefixes = leds
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter_map(|name| name.strip_suffix(suffix).map(str::to_string))
+        .collect::<HashSet<_>>();
+    prefixes.into_iter().find(|prefix| {
+        clock_segments().into_iter().all(|segment| {
+            Path::new("/sys/class/leds")
+                .join(format!("{prefix}clock{segment}/brightness"))
+                .is_file()
+        })
+    })
+}
+fn clock_path(prefix: &str, segment: &str) -> PathBuf {
+    Path::new("/sys/class/leds").join(format!("{prefix}clock{segment}/brightness"))
+}
 fn clock_available() -> bool {
-    clock_segments()
-        .iter()
-        .all(|segment| clock_path(segment).is_file())
+    clock_prefix().is_some()
 }
 fn clock_write(segments: &HashMap<String, u8>) -> Result<()> {
-    if !clock_available() {
-        bail!("segment clock is not available")
-    }
+    let prefix = clock_prefix().context("segment clock is not available")?;
     for segment in clock_segments() {
         let value = segments.get(&segment).copied().unwrap_or(0);
-        fs::write(clock_path(&segment), value.to_string())?;
+        fs::write(clock_path(&prefix, &segment), value.to_string())?;
     }
     Ok(())
 }

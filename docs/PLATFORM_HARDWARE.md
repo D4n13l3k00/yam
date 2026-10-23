@@ -7,7 +7,7 @@ YAM не линкуется с закрытым SDK колонок. Вместо
 | Возможность YAM | Источник в platform SDK | Проверка YAM | Feature |
 | --- | --- | --- | --- |
 | RGB-кольцо Mini 2 / Micro | `yandexmini_2/.../yandex_mini2_led_controller.cpp`, `yandexmicro/.../yandex_micro_led_controller.cpp` | sysfs LED brightness | `led.ring.rgb` |
-| Сегментные часы Mini 2 | `yandexmini_2/.../yandex_mini2_clock_led_controller.cpp` | все 32 `mini2:white:clock*/brightness` | `display.clock.segment.v1` |
+| Сегментные часы | `yandexmini_2/.../yandex_mini2_clock_led_controller.cpp` | все 32 `*clock{A..G}{1..4}/brightness` в одном LED-профиле | `display.clock.segment.v1` |
 | Освещённость | `libs/brightness_control/light_sensor.cpp` | `iio:device*/in_intensity_input` | `sensor.ambient_light.iio` |
 | Температура | portable PowerManager и стандартный Linux hwmon | thermal-zone/hwmon sysfs | `sensor.temperature.sysfs` |
 | Батарея и заряд | `jbl_link/portable/power_manager/power_manager.cpp` | power_supply capacity/status sysfs | `battery.sysfs` |
@@ -22,3 +22,9 @@ YAM не линкуется с закрытым SDK колонок. Вместо
 - Zigbee NCP: SDK использует специфичные UART-протоколы и persistent network state, которые нельзя безопасно открывать произвольному пакету без отдельного адаптера и явной модели разрешений.
 
 Это ограничение предотвращает блокировку колонки, утечку ключей и повреждение пользовательской конфигурации. При появлении стабильного локального интерфейса для конкретной возможности его следует добавлять как новый capability, профиль оборудования и минимальный permission, а не как raw sysfs/exec доступ.
+
+## SKU и часы
+
+YAM не привязывает сегментный renderer к строке модели: он находит полный набор из 32 sysfs-сегментов и использует общий префикс драйвера. Поэтому один адаптер подходит Станции Мини 2 с часами (`YNDX-00020`), Лайт 2 с часами (`YNDX-00026`), Мини 3 (`YNDX-00027`) и Мини 3 Про (`YNDX-00059`), если их прошивка публикует сегменты через LED sysfs.
+
+`YNDX-00054` (Midi), `YNDX-00060` (Station 3), `YNDX-0008` (Max) и `YNDX-00055` (Duo Max) используют матричный/frontal framebuffer или Android-экран, а не этот 32-сегментный интерфейс. В изученной версии SDK нет общедоступного и одинакового device node/формата кадра для этих SKU. YAM по-прежнему даёт им управление подсветкой через `display.backlight`, но не пишет произвольные байты во framebuffer: это может повредить активный интерфейс. Для точного clock-renderer на этих моделях нужны дампы `/sys/class/graphics/*/name`, `fb_var_screeninfo` и путь к framebuffer с конкретного устройства.
