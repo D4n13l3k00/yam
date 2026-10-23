@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Format, test, and check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Run tests
+        run: cargo test --locked
+      - name: Check default build
+        run: cargo check --locked
+      - name: Check registry build
+        run: cargo check --locked --features registry --bin yam-registry
+      - name: Check installer syntax
+        run: sh -n install.sh
+
+  aarch64-musl:
+    name: Build AArch64 musl binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build release binaries
+        run: >-
+          docker run --rm
+          -v "$GITHUB_WORKSPACE":/home/rust/src
+          -w /home/rust/src
+          messense/rust-musl-cross:aarch64-musl
+          cargo build --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yam-aarch64-linux-musl
+          if-no-files-found: error
+          path: |
+            target/aarch64-unknown-linux-musl/release/yamd
+            target/aarch64-unknown-linux-musl/release/yam
