@@ -15,6 +15,7 @@ cargo run --bin yamd -- --data-dir ./data
 - [API Плагинов](docs/PLUGIN_API.md)
 - [Деплой](docs/DEPLOYMENT.md)
 - [Пакеты](docs/PACKAGES.md)
+- [Реестр пакетов](docs/REGISTRY.md)
 - [Для нейронок](AGENTS.md)
 
 Примеры [`examples/`](examples/).

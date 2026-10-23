@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><title>YAM Registry</title><style>body{font:16px system-ui;max-width:64rem;margin:2rem auto;padding:0 1rem}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:.55rem;border-bottom:1px solid #ddd}button,input{padding:.45rem}</style></head>
+<body><h1>YAM Registry</h1><section><h2>Загрузить пакет</h2><form id="upload"><input type="file" name="package" accept=".yap" required><button>Опубликовать</button></form><output id="status"></output></section><section><h2>Пакеты</h2><table><thead><tr><th>ID</th><th>Версия</th><th>Описание</th><th></th></tr></thead><tbody id="packages"></tbody></table></section><script>
+const status=document.querySelector('#status'), rows=document.querySelector('#packages');
+async function load(){const r=await fetch('/api/packages');const items=await r.json();rows.innerHTML=items.map(p=>`<tr><td>${escape(p.manifest.id)}</td><td>${escape(p.manifest.version)}</td><td>${escape(p.manifest.description||'')}</td><td><a href="/api/packages/${encodeURIComponent(p.manifest.id)}/${encodeURIComponent(p.manifest.version)}/download">Скачать</a></td></tr>`).join('')}
+function escape(x){const n=document.createElement('span');n.textContent=x;return n.innerHTML}
+document.querySelector('#upload').onsubmit=async e=>{e.preventDefault();status.textContent='Загрузка…';const r=await fetch('/api/packages',{method:'POST',body:new FormData(e.target)});status.textContent=r.ok?'Опубликовано':((await r.json()).error||'Ошибка');if(r.ok){e.target.reset();load()}};load();
+</script></body></html>

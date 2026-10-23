@@ -9,6 +9,8 @@ use std::{fs, path::PathBuf};
 struct Cli {
     #[arg(long, env = "YAM_URL", default_value = "http://127.0.0.1:8099")]
     url: String,
+    #[arg(long, env = "YAM_REGISTRY_URL")]
+    registry: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -43,11 +45,21 @@ enum Command {
     Inspect {
         id: String,
     },
+    Registry {
+        #[command(subcommand)]
+        command: RegistryCommand,
+    },
     Device,
     Led {
         #[command(subcommand)]
         command: LedCommand,
     },
+}
+
+#[derive(Subcommand)]
+enum RegistryCommand {
+    List,
+    Pull { id: String, version: String },
 }
 
 #[derive(Subcommand)]
@@ -128,6 +140,36 @@ fn main() -> Result<()> {
                 .and_then(|items| items.iter().find(|item| item["manifest"]["id"] == id))
                 .context("package not found")?;
             println!("{}", serde_json::to_string_pretty(package)?);
+        }
+        Command::Registry { command } => {
+            let registry = cli
+                .registry
+                .context("pass --registry or set YAM_REGISTRY_URL")?;
+            match command {
+                RegistryCommand::List => {
+                    let packages: Value =
+                        json_response(client.get(endpoint(&registry, "/api/packages")).send()?)?;
+                    println!("{}", serde_json::to_string_pretty(&packages)?);
+                }
+                RegistryCommand::Pull { id, version } => {
+                    let package = client
+                        .get(endpoint(
+                            &registry,
+                            &format!("/api/packages/{id}/{version}/download"),
+                        ))
+                        .send()?
+                        .error_for_status()?
+                        .bytes()?;
+                    let part = multipart::Part::bytes(package.to_vec())
+                        .file_name(format!("{id}-{version}.yap"));
+                    print_response(
+                        client
+                            .post(endpoint(&cli.url, "/api/plugins"))
+                            .multipart(multipart::Form::new().part("package", part))
+                            .send()?,
+                    )?;
+                }
+            }
         }
         Command::Device => print_response(client.get(endpoint(&cli.url, "/api/device")).send()?)?,
         Command::Led { command } => match command {

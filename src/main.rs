@@ -7,12 +7,13 @@ use axum::{
     Json, Router,
 };
 use clap::Parser;
+use flate2::read::GzDecoder;
 use mlua::{Lua, LuaOptions, StdLib};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
-    io::{Cursor, Read},
+    io::Cursor,
     path::{Component, Path, PathBuf},
     process::Command,
     sync::{
@@ -339,46 +340,27 @@ impl PluginManager {
         )?)?)
     }
     fn install(&mut self, bytes: &[u8]) -> Result<Manifest> {
-        let mut z = zip::ZipArchive::new(Cursor::new(bytes))?;
-        let manifest_text = {
-            let mut f = z
-                .by_name("plugin.toml")
-                .context(".yap must contain plugin.toml")?;
-            let mut x = String::new();
-            f.read_to_string(&mut x)?;
-            x
+        let stage = self.root.join(format!(".install-{}", Uuid::new_v4()));
+        fs::create_dir(&stage)?;
+        let extract_result = if bytes.starts_with(b"PK\x03\x04") {
+            extract_zip_yap(bytes, &stage)
+        } else if bytes.starts_with(&[0x1f, 0x8b]) {
+            extract_tar_gz_yap(bytes, &stage)
+        } else {
+            bail!(".yap must be a ZIP or gzip-compressed TAR archive")
         };
+        if let Err(error) = extract_result {
+            let _ = fs::remove_dir_all(&stage);
+            return Err(error);
+        }
+        let manifest_text = fs::read_to_string(stage.join("plugin.toml"))
+            .context(".yap must contain root plugin.toml")?;
         let m: Manifest = toml::from_str(&manifest_text)?;
         validate_id(&m.id)?;
         safe_relative(&m.entry)?;
         safe_relative(m.launch.path(&m))?;
         if m.launch.kind == LaunchKind::Binary && !m.permissions.iter().any(|p| p == "exec") {
             bail!("binary packages require the exec permission")
-        }
-        let stage = self.root.join(format!(".install-{}", Uuid::new_v4()));
-        fs::create_dir(&stage)?;
-        for i in 0..z.len() {
-            let mut f = z.by_index(i)?;
-            let name = f
-                .enclosed_name()
-                .ok_or_else(|| anyhow!("unsafe archive path"))?
-                .to_owned();
-            if f.is_dir() {
-                fs::create_dir_all(stage.join(name))?
-            } else {
-                let dest = stage.join(name);
-                if let Some(p) = dest.parent() {
-                    fs::create_dir_all(p)?
-                };
-                let mode = f.unix_mode();
-                let mut o = fs::File::create(&dest)?;
-                std::io::copy(&mut f, &mut o)?;
-                #[cfg(unix)]
-                if let Some(mode) = mode {
-                    use std::os::unix::fs::PermissionsExt;
-                    fs::set_permissions(&dest, fs::Permissions::from_mode(mode))?;
-                }
-            }
         }
         let target = self.root.join(&m.id);
         if target.exists() {
@@ -397,6 +379,77 @@ impl PluginManager {
         self.enabled.remove(id);
         self.save()
     }
+}
+fn archive_path(path: &Path) -> Result<PathBuf> {
+    if path.as_os_str().is_empty()
+        || path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        bail!("unsafe archive path")
+    }
+    Ok(path.to_path_buf())
+}
+fn set_archive_mode(path: &Path, mode: u32) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+    }
+    Ok(())
+}
+fn extract_zip_yap(bytes: &[u8], stage: &Path) -> Result<()> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        let path = entry
+            .enclosed_name()
+            .ok_or_else(|| anyhow!("unsafe archive path"))?
+            .to_owned();
+        let destination = stage.join(path);
+        if entry.is_dir() {
+            fs::create_dir_all(destination)?;
+        } else {
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mode = entry.unix_mode();
+            let mut output = fs::File::create(&destination)?;
+            std::io::copy(&mut entry, &mut output)?;
+            if let Some(mode) = mode {
+                set_archive_mode(&destination, mode)?;
+            }
+        }
+    }
+    Ok(())
+}
+fn extract_tar_gz_yap(bytes: &[u8], stage: &Path) -> Result<()> {
+    let decoder = GzDecoder::new(Cursor::new(bytes));
+    let mut archive = tar::Archive::new(decoder);
+    for item in archive.entries()? {
+        let mut entry = item?;
+        let path = archive_path(&entry.path()?)?;
+        let destination = stage.join(path);
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_dir() {
+            fs::create_dir_all(destination)?;
+        } else if entry_type.is_file() {
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mode = entry.header().mode()?;
+            let mut output = fs::File::create(&destination)?;
+            std::io::copy(&mut entry, &mut output)?;
+            set_archive_mode(&destination, mode)?;
+        } else {
+            bail!("unsupported TAR archive entry")
+        }
+    }
+    Ok(())
 }
 fn compatibility_error(m: &Manifest, d: &DeviceProfile) -> Option<String> {
     if !m.compatibility.models.is_empty() && !m.compatibility.models.iter().any(|x| x == &d.model) {

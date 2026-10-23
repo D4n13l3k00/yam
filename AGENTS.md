@@ -9,6 +9,8 @@
 - `docs/` is the public developer documentation.
 - `install.sh` installs a prebuilt Linux binary.
 - `tools/convert_apkg.py` converts an apkg repository package into `.yap`.
+- `src/bin/yam-registry.rs` builds the optional S3-backed registry (`--features registry`).
+- `yam-registry.service` is the systemd unit template for the registry host.
 
 ## Required checks
 

@@ -11,7 +11,6 @@ import tarfile
 import tempfile
 import urllib.parse
 import urllib.request
-import zipfile
 from pathlib import Path
 
 
@@ -124,18 +123,22 @@ def manifest(package: dict, program: Path, mode: str) -> str:
 
 def write_yap(source: Path, package: dict, program: Path, mode: str, output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("plugin.toml", manifest(package, program, mode))
-        archive.writestr("launch.lua", "")
+    with tarfile.open(output, "w:gz") as archive:
+        def add_bytes(name: str, content: bytes, mode: int = 0o644) -> None:
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            info.mode = mode
+            archive.addfile(info, io.BytesIO(content))
+
+        add_bytes("plugin.toml", manifest(package, program, mode).encode())
+        add_bytes("launch.lua", b"")
         for path in sorted(source.rglob("*")):
             if not path.is_file():
                 continue
             relative = path.relative_to(source).as_posix()
-            info = zipfile.ZipInfo(relative)
-            info.compress_type = zipfile.ZIP_DEFLATED
-            info.external_attr = (path.stat().st_mode & 0xFFFF) << 16
+            info = archive.gettarinfo(str(path), arcname=relative)
             with path.open("rb") as file:
-                archive.writestr(info, file.read())
+                archive.addfile(info, file)
 
 
 def main() -> int:
