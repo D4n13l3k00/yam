@@ -47,3 +47,19 @@ jobs:
           path: |
             target/aarch64-unknown-linux-musl/release/yamd
             target/aarch64-unknown-linux-musl/release/yam
+
+  windows:
+    name: Build Windows binaries
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --bins
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yam-x86_64-pc-windows-msvc
+          if-no-files-found: error
+          path: |
+            target/release/yamd.exe
+            target/release/yam.exe

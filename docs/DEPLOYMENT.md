@@ -11,6 +11,17 @@ curl -fsSL https://<host>/yaff/install.sh | sudo sh -s -- https://<host>/yaff/ya
 
 Первый URL — daemon `yamd`; третий необязательный URL — CLI `yam`. Скрипт создаёт `bin/yamd`, `data/` и `run.sh`. На системах с systemd он также устанавливает и запускает `yam.service`.
 
+## Windows
+
+В PowerShell скачайте installer из репозитория и запустите его. По умолчанию он получает последний GitHub Release, проверяет `SHA256SUMS`, устанавливает в `%LOCALAPPDATA%\YAM`, запускает `yamd` и добавляет его в автозапуск текущего пользователя:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/nyakokitsu/yam/main/install.ps1 -OutFile install.ps1
+.\install.ps1
+```
+
+Для конкретной версии: `.\install.ps1 -Version 0.1.1`. Флаг `-NoStart` только устанавливает файлы и автозапуск.
+
 ## Развёртывание через ADB
 
 Для подключённого ADB-устройства:

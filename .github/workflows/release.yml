@@ -10,8 +10,24 @@ permissions:
   contents: write
 
 jobs:
+  windows:
+    name: Build Windows binaries
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --bins
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yam-x86_64-pc-windows-msvc
+          path: |
+            target/release/yamd.exe
+            target/release/yam.exe
+
   release:
     name: Build and publish release
+    needs: windows
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -61,12 +77,20 @@ jobs:
           cp target/aarch64-unknown-linux-musl/release/yamd "dist/yamd-aarch64-linux-musl"
           cp target/aarch64-unknown-linux-musl/release/yam "dist/yam-aarch64-linux-musl"
           chmod 0755 dist/yamd-aarch64-linux-musl dist/yam-aarch64-linux-musl
-          (cd dist && sha256sum yamd-aarch64-linux-musl yam-aarch64-linux-musl > SHA256SUMS)
+      - uses: actions/download-artifact@v4
+        with:
+          name: yam-x86_64-pc-windows-msvc
+          path: dist
+      - name: Create checksums
+        run: |
+          (cd dist && sha256sum yamd-aarch64-linux-musl yam-aarch64-linux-musl yamd.exe yam.exe > SHA256SUMS)
       - name: Create GitHub release
         run: |
           gh release create "${{ steps.version.outputs.tag }}" \
             dist/yamd-aarch64-linux-musl \
             dist/yam-aarch64-linux-musl \
+            dist/yamd.exe \
+            dist/yam.exe \
             dist/SHA256SUMS \
             --title "YAM ${{ steps.version.outputs.version }}" \
             --generate-notes
