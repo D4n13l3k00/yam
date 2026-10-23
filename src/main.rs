@@ -250,11 +250,17 @@ impl Led {
         Ok(())
     }
     async fn off(&self) -> Result<()> {
-        let n = self.settings.lock().await.count;
-        self.draw(vec!["#000000".into(); n]).await
+        let c = self.settings.lock().await.clone();
+        if c.profile == "midi" {
+            return self.release_midi(&c);
+        }
+        self.draw(vec!["#000000".into(); c.count]).await
     }
     async fn write(&self, c: &LedSettings, channel: &str, i: usize, value: u8) -> Result<()> {
         let path = match c.profile.as_str() {
+            "midi" => {
+                PathBuf::from(&c.sysfs_root).join(format!("cucumber:{channel}:ring{i}/brightness"))
+            }
             "mini2" => PathBuf::from(&c.sysfs_root)
                 .join(format!("mini2:{channel}:ring{}/brightness", i + 1)),
             "micro" => PathBuf::from(&c.sysfs_root)
@@ -273,6 +279,19 @@ impl Led {
             p => bail!("unknown LED profile {p}"),
         };
         fs::write(&path, value.to_string()).with_context(|| format!("write {}", path.display()))
+    }
+    // Writing brightness detaches the `ledfb-ring` trigger used by platformd.
+    fn release_midi(&self, c: &LedSettings) -> Result<()> {
+        for i in 0..c.count {
+            for channel in ["red", "green", "blue"] {
+                let led = PathBuf::from(&c.sysfs_root).join(format!("cucumber:{channel}:ring{i}"));
+                fs::write(led.join("brightness"), "0")
+                    .with_context(|| format!("write {}", led.display()))?;
+                fs::write(led.join("trigger"), "ledfb-ring")
+                    .with_context(|| format!("restore trigger {}", led.display()))?;
+            }
+        }
+        Ok(())
     }
     async fn play_led(&self, path: PathBuf) -> Result<()> {
         let source = fs::read_to_string(&path)
@@ -542,6 +561,10 @@ fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
             || text.contains("yandexmicro")
         {
             "yandexmicro".into()
+        } else if Path::new("/sys/class/leds/cucumber:red:ring0/brightness").exists()
+            || text.contains("yandex,cucumber")
+        {
+            "yandexmidi".into()
         } else if Path::new("/sys/class/leds/mini2:red:ring1/brightness").exists()
             || text.contains("yandexmini_2")
         {
@@ -708,48 +731,142 @@ fn configured_light_sensor(name: &str) -> Result<PathBuf> {
         .context("invalid ambient light sensor path")?
         .to_path_buf())
 }
-fn clock_segments() -> Vec<String> {
-    let mut segments = Vec::new();
-    for position in 1..=4 {
-        for part in ["A", "B", "C", "D", "E", "F", "G"] {
-            segments.push(format!("{part}{position}"));
+enum ClockLayout {
+    Mini2(String),
+    Cucumber(String),
+}
+const CUCUMBER_EXTRA_SEGMENTS: [&str; 14] = [
+    "H1", "H2", "L1", "L2", "M1", "M2", "P1", "P2", "P4", "P5", "Q1", "Q2", "Q4", "Q5",
+];
+impl ClockLayout {
+    fn segments(&self) -> Vec<String> {
+        let mut segments = Vec::new();
+        for position in 1..=4 {
+            for part in ["A", "B", "C", "D", "E", "F", "G"] {
+                segments.push(format!("{part}{position}"));
+            }
+        }
+        segments.extend(["PLUS1".into(), "PLUS2".into()]);
+        match self {
+            ClockLayout::Mini2(_) => segments.extend(["MINUS".into(), "DEGREE".into()]),
+            ClockLayout::Cucumber(_) => {
+                segments.push("DEGREE".into());
+                segments.extend(CUCUMBER_EXTRA_SEGMENTS.iter().map(|x| x.to_string()));
+            }
+        }
+        segments
+    }
+    fn path(&self, segment: &str) -> PathBuf {
+        match self {
+            ClockLayout::Mini2(prefix) => {
+                Path::new("/sys/class/leds").join(format!("{prefix}clock{segment}/brightness"))
+            }
+            ClockLayout::Cucumber(prefix) => {
+                let name = match segment {
+                    "PLUS1" => "p3".into(),
+                    "PLUS2" => "q3".into(),
+                    "DEGREE" => "deg".into(),
+                    other => other.to_lowercase(),
+                };
+                Path::new("/sys/class/leds").join(format!("{prefix}white:clock-{name}/brightness"))
+            }
         }
     }
-    segments.extend([
-        "PLUS1".into(),
-        "PLUS2".into(),
-        "MINUS".into(),
-        "DEGREE".into(),
-    ]);
-    segments
+    fn complete(&self) -> bool {
+        self.segments()
+            .iter()
+            .all(|segment| self.path(segment).is_file())
+    }
+    // `sync:clock-N` = 1 freezes the Midi display until it is reset to 0.
+    fn unlatch(&self) -> Result<()> {
+        let ClockLayout::Cucumber(prefix) = self else {
+            return Ok(());
+        };
+        let latch = format!("{prefix}sync:clock-");
+        for entry in fs::read_dir("/sys/class/leds")?.flatten() {
+            let brightness = entry.path().join("brightness");
+            if entry.file_name().to_string_lossy().starts_with(&latch)
+                && read_trimmed(&brightness)? != "0"
+            {
+                fs::write(brightness, "0")?;
+            }
+        }
+        Ok(())
+    }
 }
-fn clock_prefix() -> Option<String> {
-    let leds = fs::read_dir("/sys/class/leds").ok()?;
-    let suffix = "clockA1";
-    let prefixes = leds
+fn clock_layout() -> Option<ClockLayout> {
+    let names = fs::read_dir("/sys/class/leds")
+        .ok()?
         .flatten()
         .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter_map(|name| name.strip_suffix(suffix).map(str::to_string))
-        .collect::<HashSet<_>>();
-    prefixes.into_iter().find(|prefix| {
-        clock_segments().into_iter().all(|segment| {
-            Path::new("/sys/class/leds")
-                .join(format!("{prefix}clock{segment}/brightness"))
-                .is_file()
-        })
-    })
+        .collect::<Vec<_>>();
+    let upper = names
+        .iter()
+        .filter_map(|name| name.strip_suffix("clockA1"))
+        .map(|prefix| ClockLayout::Mini2(prefix.into()));
+    let cucumber = names
+        .iter()
+        .filter_map(|name| name.strip_suffix("white:clock-a1"))
+        .map(|prefix| ClockLayout::Cucumber(prefix.into()));
+    upper.chain(cucumber).find(ClockLayout::complete)
 }
-fn clock_path(prefix: &str, segment: &str) -> PathBuf {
-    Path::new("/sys/class/leds").join(format!("{prefix}clock{segment}/brightness"))
+fn clock_segments() -> Vec<String> {
+    clock_layout()
+        .unwrap_or(ClockLayout::Mini2(String::new()))
+        .segments()
 }
 fn clock_available() -> bool {
-    clock_prefix().is_some()
+    clock_layout().is_some()
+}
+// platformd redraws the clock once a minute, so release restores its last frame instead of blanking.
+struct ClockOwnership {
+    system: Vec<(PathBuf, String)>,
+    ours: Vec<(PathBuf, String)>,
+}
+static CLOCK_OWNERSHIP: std::sync::Mutex<Option<ClockOwnership>> = std::sync::Mutex::new(None);
+fn clock_read(layout: &ClockLayout) -> Result<Vec<(PathBuf, String)>> {
+    layout
+        .segments()
+        .iter()
+        .map(|segment| {
+            let path = layout.path(segment);
+            let value = read_trimmed(&path)?;
+            Ok((path, value))
+        })
+        .collect()
 }
 fn clock_write(segments: &HashMap<String, u8>) -> Result<()> {
-    let prefix = clock_prefix().context("segment clock is not available")?;
-    for segment in clock_segments() {
+    let layout = clock_layout().context("segment clock is not available")?;
+    let mut ownership = CLOCK_OWNERSHIP.lock().unwrap_or_else(|e| e.into_inner());
+    let current = clock_read(&layout)?;
+    if ownership.as_ref().is_none_or(|o| o.ours != current) {
+        *ownership = Some(ClockOwnership {
+            system: current,
+            ours: Vec::new(),
+        });
+    }
+    layout.unlatch()?;
+    for segment in layout.segments() {
         let value = segments.get(&segment).copied().unwrap_or(0);
-        fs::write(clock_path(&prefix, &segment), value.to_string())?;
+        fs::write(layout.path(&segment), value.to_string())?;
+    }
+    if let Some(o) = ownership.as_mut() {
+        o.ours = clock_read(&layout)?;
+    }
+    Ok(())
+}
+fn clock_release() -> Result<()> {
+    let layout = clock_layout().context("segment clock is not available")?;
+    let mut ownership = CLOCK_OWNERSHIP.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(o) = ownership.take() else {
+        return Ok(());
+    };
+    if clock_read(&layout)? != o.ours {
+        return Ok(());
+    }
+    layout.unlatch()?;
+    for (path, value) in o.system {
+        fs::write(path, value)?;
     }
     Ok(())
 }
@@ -1011,6 +1128,20 @@ mod tests {
     }
 
     #[test]
+    fn maps_cucumber_clock_segments() {
+        let layout = ClockLayout::Cucumber("cucumber:".into());
+        assert_eq!(layout.segments().len(), 45);
+        assert_eq!(
+            layout.path("PLUS1"),
+            Path::new("/sys/class/leds/cucumber:white:clock-p3/brightness")
+        );
+        assert_eq!(
+            layout.path("G4"),
+            Path::new("/sys/class/leds/cucumber:white:clock-g4/brightness")
+        );
+    }
+
+    #[test]
     fn network_policy_rejects_local_address() {
         let policy = NetworkPolicy {
             allow: vec!["127.0.0.1".into()],
@@ -1108,6 +1239,10 @@ fn valid_mac(mac: &str) -> bool {
 fn configured_rgb_ring(settings: &LedSettings) -> bool {
     let sample = |channel: &str| -> Option<PathBuf> {
         match settings.profile.as_str() {
+            "midi" => Some(
+                PathBuf::from(&settings.sysfs_root)
+                    .join(format!("cucumber:{channel}:ring0/brightness")),
+            ),
             "mini2" => Some(
                 PathBuf::from(&settings.sysfs_root)
                     .join(format!("mini2:{channel}:ring1/brightness")),
@@ -1424,9 +1559,7 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
             )?;
             clock.set(
                 "off",
-                lua.create_function(|_, ()| {
-                    clock_write(&HashMap::new()).map_err(mlua::Error::external)
-                })?,
+                lua.create_function(|_, ()| clock_release().map_err(mlua::Error::external))?,
             )?;
             api.set("clock", clock)?;
         }
@@ -1785,7 +1918,7 @@ async fn get_clock() -> Json<ClockInfo> {
 }
 async fn put_clock(Json(request): Json<ClockRequest>) -> Result<StatusCode, ApiError> {
     if request.off {
-        clock_write(&HashMap::new())?;
+        clock_release()?;
     } else if let Some(time) = request.time {
         clock_time(&time, request.brightness.unwrap_or(170))?;
     } else if let Some(segments) = request.segments {
@@ -1858,6 +1991,10 @@ async fn main() -> Result<()> {
     if !has_settings && Path::new("/sys/class/leds/micro:red:ring1/brightness").exists() {
         settings.led.profile = "micro".into();
         settings.led.count = 3;
+    }
+    if !has_settings && Path::new("/sys/class/leds/cucumber:red:ring0/brightness").exists() {
+        settings.led.profile = "midi".into();
+        settings.led.count = 24;
     }
     let led = Arc::new(Led {
         settings: Arc::new(Mutex::new(settings.led.clone())),
