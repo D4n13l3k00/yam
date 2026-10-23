@@ -1,6 +1,6 @@
 # YAM
 
-yam = Yandex Application Manager. Ставьте на свою колонку .yap
+yam = Y Application Manager. Ставьте на свою колонку .yap
 
 ```sh
 cargo check
