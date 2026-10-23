@@ -2,25 +2,25 @@
 
 ## Installer
 
-Installer принимает URL готового бинарника `yamd` и необязательный каталог установки. Каталог по умолчанию — `/data/quazar/yam`.
+Installer скачивает последний GitHub Release, проверяет `SHA256SUMS`, устанавливает `yamd` и `yam` в `/data/quazar/yam` и запускает daemon через systemd, если он доступен.
 
 ```sh
-curl -fsSL https://<host>/yaff/install.sh | sudo sh -s -- https://<host>/yaff/yamd-aarch64-linux-musl
-curl -fsSL https://<host>/yaff/install.sh | sudo sh -s -- https://<host>/yaff/yamd-aarch64-linux-musl /data/quazar/custom-yam https://<host>/yaff/yam-aarch64-linux-musl
+curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sudo sh -s -- 0.1.1 /data/quazar/custom-yam
 ```
 
-Первый URL — daemon `yamd`; третий необязательный URL — CLI `yam`. Скрипт создаёт `bin/yamd`, `data/` и `run.sh`. На системах с systemd он также устанавливает и запускает `yam.service`.
+Первый аргумент — версия (по умолчанию `latest`), второй — каталог установки. Скрипт создаёт `bin/yamd`, `bin/yam`, `data/` и `run.sh`.
 
 ## Windows
 
-В PowerShell скачайте installer из репозитория и запустите его. По умолчанию он получает последний GitHub Release, проверяет `SHA256SUMS`, устанавливает в `%LOCALAPPDATA%\YAM`, запускает `yamd` и добавляет его в автозапуск текущего пользователя:
+В PowerShell скачайте installer из репозитория и запустите его. По умолчанию он получает последний GitHub Release, проверяет `SHA256SUMS` и устанавливает CLI в `%LOCALAPPDATA%\YAM\bin`:
 
 ```powershell
 Invoke-WebRequest https://raw.githubusercontent.com/nyakokitsu/yam/main/install.ps1 -OutFile install.ps1
 .\install.ps1
 ```
 
-Для конкретной версии: `.\install.ps1 -Version 0.1.1`. Флаг `-NoStart` только устанавливает файлы и автозапуск.
+Для конкретной версии: `.\install.ps1 -Version 0.1.1`. Windows CLI управляет daemon на Linux-колонке через `--url http://<speaker-ip>:8099`.
 
 ## Развёртывание через ADB
 

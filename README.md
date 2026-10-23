@@ -1,13 +1,19 @@
 # YAM
 
-yam = Y Application Manager. Ставьте на свою колонку .yap
+yam = Y Application Manager. Ставьте на свою колонку .yap.
 
+Linux / колонка:
 ```sh
-cargo check
-cargo run --bin yamd -- --data-dir ./data
+curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sudo sh
 ```
 
-Открываете `http://<speaker-ip>:8099`.
+Windows CLI:
+
+```powershell
+irm https://raw.githubusercontent.com/nyakokitsu/yam/main/install.ps1 | iex
+```
+
+Windows CLI управляет колонкой: `yam --url http://<speaker-ip>:8099 list`.
 
 # Документация
 
