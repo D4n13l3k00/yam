@@ -8,12 +8,13 @@ use axum::{
 };
 use clap::Parser;
 use flate2::read::GzDecoder;
-use mlua::{Lua, LuaOptions, StdLib};
+use mlua::{Lua, LuaOptions, LuaSerdeExt, StdLib};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
-    io::Cursor,
+    io::{Cursor, Read},
+    net::TcpStream,
     path::{Component, Path, PathBuf},
     process::Command,
     sync::{
@@ -24,6 +25,7 @@ use std::{
 };
 use tokio::{net::TcpListener, sync::Mutex, task};
 use tower_http::trace::TraceLayer;
+use url::Url;
 use uuid::Uuid;
 
 #[derive(Parser)]
@@ -106,9 +108,19 @@ struct Manifest {
     #[serde(default)]
     settings: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
+    network: NetworkPolicy,
+    #[serde(default)]
     compatibility: Compatibility,
     #[serde(default)]
     launch: Launch,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct NetworkPolicy {
+    /// Exact host names or a DNS suffix prefixed with `*.`.
+    #[serde(default)]
+    allow: Vec<String>,
+    #[serde(default)]
+    allow_insecure_http: bool,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Launch {
@@ -748,6 +760,264 @@ fn validate_clock_segments(segments: &HashMap<String, u8>) -> Result<()> {
     }
     Ok(())
 }
+fn network_url_allowed(policy: &NetworkPolicy, value: &str) -> Result<Url> {
+    let url = Url::parse(value).context("invalid URL")?;
+    match url.scheme() {
+        "https" => {}
+        "http" if policy.allow_insecure_http => {}
+        "http" => bail!("HTTP requires network.allow_insecure_http = true"),
+        _ => bail!("only HTTP(S) URLs are allowed"),
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        bail!("URLs with credentials are not allowed")
+    }
+    let host = url
+        .host_str()
+        .context("URL host is required")?
+        .to_ascii_lowercase();
+    if host == "localhost" {
+        bail!("localhost is not allowed")
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let local = match ip {
+            std::net::IpAddr::V4(ip) => {
+                ip.is_private()
+                    || ip.is_loopback()
+                    || ip.is_link_local()
+                    || ip.is_broadcast()
+                    || ip.is_unspecified()
+                    || ip.is_multicast()
+            }
+            std::net::IpAddr::V6(ip) => {
+                ip.is_loopback()
+                    || ip.is_unicast_link_local()
+                    || ip.is_unspecified()
+                    || ip.is_multicast()
+            }
+        };
+        if local {
+            bail!("local-network addresses are not allowed")
+        }
+    }
+    let allowed = policy.allow.iter().any(|entry| {
+        let entry = entry.to_ascii_lowercase();
+        entry == host
+            || entry
+                .strip_prefix("*.")
+                .is_some_and(|suffix| host.ends_with(&format!(".{suffix}")))
+    });
+    if !allowed {
+        bail!("URL host is not allowed by the package manifest")
+    }
+    Ok(url)
+}
+fn http_request(
+    policy: &NetworkPolicy,
+    method: &str,
+    url: &str,
+    body: Option<String>,
+) -> Result<(u16, String)> {
+    let url = network_url_allowed(policy, url)?;
+    let method = reqwest::Method::from_bytes(method.as_bytes()).context("invalid HTTP method")?;
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let response = client
+        .request(method, url)
+        .body(body.unwrap_or_default())
+        .send()?;
+    let status = response.status().as_u16();
+    let mut response_body = String::new();
+    response
+        .take(1_048_576)
+        .read_to_string(&mut response_body)?;
+    Ok((status, response_body))
+}
+fn ipc_endpoint(service: &str) -> Result<String> {
+    let variable = match service {
+        "alarmd" => "YAM_ALARMD_ADDR",
+        "aliced" => "YAM_ALICED_ADDR",
+        _ => bail!("only alarmd and aliced IPC streams are available"),
+    };
+    let address =
+        std::env::var(variable).with_context(|| format!("{variable} is not configured"))?;
+    address
+        .parse::<std::net::SocketAddr>()
+        .context("invalid IPC address")?;
+    Ok(address)
+}
+fn protobuf_varint(data: &[u8], offset: &mut usize) -> Result<u64> {
+    let mut value = 0u64;
+    for shift in (0..64).step_by(7) {
+        let byte = *data.get(*offset).context("truncated protobuf field")?;
+        *offset += 1;
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Ok(value);
+        }
+    }
+    bail!("invalid protobuf varint")
+}
+fn protobuf_fields(data: &[u8]) -> Result<Vec<(u32, u8, Vec<u8>)>> {
+    let mut fields = Vec::new();
+    let mut offset = 0;
+    while offset < data.len() {
+        let key = protobuf_varint(data, &mut offset)?;
+        let number = (key >> 3) as u32;
+        let wire = (key & 7) as u8;
+        let value = match wire {
+            0 => protobuf_varint(data, &mut offset)?.to_le_bytes().to_vec(),
+            1 => {
+                let end = offset.checked_add(8).context("protobuf length overflow")?;
+                let value = data
+                    .get(offset..end)
+                    .context("truncated protobuf field")?
+                    .to_vec();
+                offset = end;
+                value
+            }
+            2 => {
+                let size = usize::try_from(protobuf_varint(data, &mut offset)?)?;
+                let end = offset
+                    .checked_add(size)
+                    .context("protobuf length overflow")?;
+                let value = data
+                    .get(offset..end)
+                    .context("truncated protobuf field")?
+                    .to_vec();
+                offset = end;
+                value
+            }
+            5 => {
+                let end = offset.checked_add(4).context("protobuf length overflow")?;
+                let value = data
+                    .get(offset..end)
+                    .context("truncated protobuf field")?
+                    .to_vec();
+                offset = end;
+                value
+            }
+            _ => bail!("unsupported protobuf wire type"),
+        };
+        fields.push((number, wire, value));
+    }
+    Ok(fields)
+}
+fn nested_field(data: &[u8], field: u32) -> Result<Option<Vec<u8>>> {
+    Ok(protobuf_fields(data)?
+        .into_iter()
+        .find_map(|(number, wire, value)| (number == field && wire == 2).then_some(value)))
+}
+fn text_field(data: &[u8], field: u32) -> Result<Option<String>> {
+    nested_field(data, field)?
+        .map(|value| String::from_utf8(value).context("invalid UTF-8 in IPC message"))
+        .transpose()
+}
+fn varint_field(data: &[u8], field: u32) -> Result<Option<u64>> {
+    Ok(protobuf_fields(data)?
+        .into_iter()
+        .find_map(|(number, wire, value)| {
+            (number == field && wire == 0)
+                .then(|| value.try_into().ok().map(u64::from_le_bytes))
+                .flatten()
+        }))
+}
+fn decode_ipc_event(service: &str, message: &[u8]) -> Result<Option<serde_json::Value>> {
+    match service {
+        "aliced" => {
+            let Some(state) = nested_field(message, 3)? else {
+                return Ok(None);
+            };
+            Ok(text_field(&state, 2)?
+                .map(|transcript| serde_json::json!({"type": "speech", "transcript": transcript})))
+        }
+        "alarmd" => {
+            let Some(event) = nested_field(message, 215)? else {
+                return Ok(None);
+            };
+            let Some(alarm) = nested_field(&event, 1)? else {
+                return Ok(None);
+            };
+            Ok(Some(serde_json::json!({
+                "type": "alarm_fired",
+                "id": text_field(&alarm, 1)?,
+                "alarm_type": varint_field(&alarm, 2)?,
+                "start_timestamp_ms": varint_field(&alarm, 3)?,
+                "duration_seconds": varint_field(&alarm, 4)?,
+                "remind_message": text_field(&alarm, 5)?,
+                "currently_playing": varint_field(&alarm, 6)?.map(|value| value != 0),
+            })))
+        }
+        _ => bail!("unsupported IPC service"),
+    }
+}
+fn ipc_next(service: &str, timeout_ms: u64) -> Result<Option<serde_json::Value>> {
+    if timeout_ms > 60_000 {
+        bail!("IPC timeout is limited to 60 seconds")
+    }
+    let address = ipc_endpoint(service)?;
+    let mut stream = TcpStream::connect_timeout(&address.parse()?, Duration::from_secs(5))?;
+    stream.set_read_timeout(Some(Duration::from_millis(timeout_ms.max(1))))?;
+    loop {
+        let mut header = [0u8; 4];
+        match stream.read_exact(&mut header) {
+            Ok(()) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                return Ok(None)
+            }
+            Err(error) => return Err(error.into()),
+        }
+        let length = u32::from_le_bytes(header) as usize;
+        if length > 1_048_576 {
+            bail!("IPC message exceeds 1 MiB")
+        }
+        let mut payload = vec![0; length];
+        stream.read_exact(&mut payload)?;
+        if let Some(event) = decode_ipc_event(service, &payload)? {
+            return Ok(Some(event));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_recognized_phrase() {
+        // QuasarMessage.alice_state (3), AliceState.recognized_phrase (2) = "hi".
+        let message = [0x1a, 0x04, 0x12, 0x02, b'h', b'i'];
+        let event = decode_ipc_event("aliced", &message).unwrap().unwrap();
+        assert_eq!(event["transcript"], "hi");
+    }
+
+    #[test]
+    fn decodes_fired_alarm() {
+        // QuasarMessage.alarm_event (215), AlarmEvent.alarm_fired (1), Alarm{id:"a1", type:TIMER}.
+        let message = [
+            0xba, 0x0d, 0x08, 0x0a, 0x06, 0x0a, 0x02, b'a', b'1', 0x10, 0x02,
+        ];
+        let event = decode_ipc_event("alarmd", &message).unwrap().unwrap();
+        assert_eq!(event["id"], "a1");
+        assert_eq!(event["alarm_type"], 2);
+    }
+
+    #[test]
+    fn network_policy_rejects_local_address() {
+        let policy = NetworkPolicy {
+            allow: vec!["127.0.0.1".into()],
+            allow_insecure_http: true,
+        };
+        assert!(network_url_allowed(&policy, "http://127.0.0.1/").is_err());
+    }
+}
 fn clock_time(value: &str, brightness: u8) -> Result<()> {
     let bytes = value.as_bytes();
     if bytes.len() != 5
@@ -1159,6 +1429,66 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
                 })?,
             )?;
             api.set("input", input)?;
+        }
+        if permissions.contains("network") {
+            if manifest.network.allow.is_empty() {
+                bail!("network permission requires a non-empty [network].allow manifest list")
+            }
+            let http = lua.create_table()?;
+            let get_policy = manifest.network.clone();
+            http.set(
+                "get",
+                lua.create_function(move |lua, url: String| {
+                    let (status, body) = http_request(&get_policy, "GET", &url, None)
+                        .map_err(mlua::Error::external)?;
+                    let result = lua.create_table()?;
+                    result.set("status", status)?;
+                    result.set("body", body)?;
+                    Ok(result)
+                })?,
+            )?;
+            let post_policy = manifest.network.clone();
+            http.set(
+                "post",
+                lua.create_function(move |lua, (url, body): (String, String)| {
+                    if body.len() > 1_048_576 {
+                        return Err(mlua::Error::external("request body exceeds 1 MiB"));
+                    }
+                    let (status, body) = http_request(&post_policy, "POST", &url, Some(body))
+                        .map_err(mlua::Error::external)?;
+                    let result = lua.create_table()?;
+                    result.set("status", status)?;
+                    result.set("body", body)?;
+                    Ok(result)
+                })?,
+            )?;
+            api.set("http", http)?;
+        }
+        if permissions.contains("ipc.alarm") || permissions.contains("ipc.speech") {
+            let ipc = lua.create_table()?;
+            if permissions.contains("ipc.alarm") {
+                ipc.set(
+                    "next_alarm",
+                    lua.create_function(|lua, timeout_ms: u64| {
+                        match ipc_next("alarmd", timeout_ms).map_err(mlua::Error::external)? {
+                            Some(event) => lua.to_value(&event),
+                            None => Ok(mlua::Value::Nil),
+                        }
+                    })?,
+                )?;
+            }
+            if permissions.contains("ipc.speech") {
+                ipc.set(
+                    "next_speech",
+                    lua.create_function(|lua, timeout_ms: u64| {
+                        match ipc_next("aliced", timeout_ms).map_err(mlua::Error::external)? {
+                            Some(event) => lua.to_value(&event),
+                            None => Ok(mlua::Value::Nil),
+                        }
+                    })?,
+                )?;
+            }
+            api.set("ipc", ipc)?;
         }
         if permissions.contains("system") {
             let system = lua.create_table()?;

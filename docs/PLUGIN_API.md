@@ -40,7 +40,7 @@ zip -r ../my-plugin.yap plugin.toml main.lua patterns sounds bin
 
 ## Lua-окружение
 
-В Lua доступны `table`, `string`, `math` и `utf8`. Библиотеки `os`, `io`, `package`, debug и сеть недоступны. Глобальные объекты:
+В Lua доступны `table`, `string`, `math` и `utf8`. Библиотеки `os`, `io`, `package` и debug недоступны. Сеть доступна только через permission-gated `alice.http`.
 
 - `event` содержит `manual` при запуске через Web UI.
 - `device.model`, `device.architecture`, `device.led_count` и `device.features` описывают колонку.
@@ -59,10 +59,34 @@ zip -r ../my-plugin.yap plugin.toml main.lua patterns sounds bin
 | `sensors.control` | `alice.sensors.configure_ambient_light(device, gain, integration_ms)` | `sensor.ambient_light.iio` |
 | `clock` | `alice.clock.available()`, `time("HH:MM", brightness)`, `segments(levels)`, `off()` | `display.clock.segment.v1` |
 | `input` | `alice.input.devices()` | `input.evdev` |
+| `network` | `alice.http.get(url)`, `alice.http.post(url, body)` | непустой `[network].allow` |
+| `ipc.alarm` | `alice.ipc.next_alarm(timeout_ms)` | `YAM_ALARMD_ADDR` у daemon |
+| `ipc.speech` | `alice.ipc.next_speech(timeout_ms)` | `YAM_ALICED_ADDR` у daemon |
 | `system` | `alice.system.hostname()`, `uptime()`, `meminfo()` | нет |
 | `exec` | `alice.exec(program, args)` | runtime-настройка `allow_plugin_binaries = true` |
 
 `alice.set` принимает ровно `device.led_count` строк формата `#RRGGBB`. `alice.sleep` принимает 0–60000 мс и является точкой отмены анимации.
+
+### HTTP(S)
+
+`network` не открывает raw socket. Пакет обязан перечислить разрешённые хосты в манифесте; допустимы точный хост и суффикс `*.example.org`. Loopback, private/link-local IP literals и `localhost` отклоняются. По умолчанию разрешён только HTTPS, редиректы отключены, а request/response ограничены 1 МиБ.
+
+```toml
+permissions = ["network"]
+
+[network]
+allow = ["api.example.org", "*.example.net"]
+```
+
+`alice.http.get(url)` и `alice.http.post(url, body)` возвращают `{ status = number, body = string }`. HTTP разрешается только при явном `allow_insecure_http = true` в `[network]`.
+
+### События aliced и alarmd
+
+YAM подключается к **двум разрешённым** IPC-сервисам и декодирует только документированные поля `QuasarMessage`: `AliceState.recognized_phrase` и `AlarmEvent.alarm_fired`. Он не даёт Lua raw protobuf, команды IPC или доступ к другим сервисам.
+
+Администратор daemon задаёт адреса сервисов (обычно loopback-порты из конфигурации прошивки): `YAM_ALARMD_ADDR=127.0.0.1:PORT` и `YAM_ALICED_ADDR=127.0.0.1:PORT`. Это намеренно не настраивается пакетом.
+
+`alice.ipc.next_alarm(timeout_ms)` возвращает `nil` по тайм-ауту либо `{ type = "alarm_fired", id, alarm_type, start_timestamp_ms, duration_seconds, remind_message, currently_playing }`. `alice.ipc.next_speech(timeout_ms)` соответственно возвращает `nil` либо `{ type = "speech", transcript }`. Тайм-аут — до 60 секунд. Распознанная речь относится к персональным данным: запрашивайте `ipc.speech` только при необходимости, предупреждайте пользователя и не передавайте текст в сеть без одновременно объявленного `network`.
 
 ### Датчики
 
