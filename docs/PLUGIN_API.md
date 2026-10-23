@@ -69,7 +69,7 @@ zip -r ../my-plugin.yap plugin.toml main.lua patterns sounds bin
 
 ### HTTP(S)
 
-`network` не открывает raw socket. Пакет обязан перечислить разрешённые хосты в манифесте; допустимы точный хост и суффикс `*.example.org`. Loopback, private/link-local IP literals и `localhost` отклоняются. По умолчанию разрешён только HTTPS, редиректы отключены, а request/response ограничены 1 МиБ.
+`network` не открывает raw socket. Пакет обязан перечислить разрешённые хосты в манифесте; допустимы точный хост, суффикс `*.example.org` и явный wildcard `*` для любого публичного хоста. Loopback, private/link-local IP literals и `localhost` отклоняются даже при `*`. По умолчанию разрешён только HTTPS, редиректы отключены, а request/response ограничены 1 МиБ.
 
 ```toml
 permissions = ["network"]

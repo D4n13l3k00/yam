@@ -801,7 +801,8 @@ fn network_url_allowed(policy: &NetworkPolicy, value: &str) -> Result<Url> {
     }
     let allowed = policy.allow.iter().any(|entry| {
         let entry = entry.to_ascii_lowercase();
-        entry == host
+        entry == "*"
+            || entry == host
             || entry
                 .strip_prefix("*.")
                 .is_some_and(|suffix| host.ends_with(&format!(".{suffix}")))
@@ -1016,6 +1017,15 @@ mod tests {
             allow_insecure_http: true,
         };
         assert!(network_url_allowed(&policy, "http://127.0.0.1/").is_err());
+    }
+
+    #[test]
+    fn network_wildcard_allows_public_host() {
+        let policy = NetworkPolicy {
+            allow: vec!["*".into()],
+            allow_insecure_http: false,
+        };
+        assert!(network_url_allowed(&policy, "https://api.example.org/path").is_ok());
     }
 }
 fn clock_time(value: &str, brightness: u8) -> Result<()> {
