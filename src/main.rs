@@ -463,6 +463,19 @@ impl PluginManager {
         if m.launch.kind == LaunchKind::Binary && !m.permissions.iter().any(|p| p == "exec") {
             bail!("binary packages require the exec permission")
         }
+        if m.launch.kind == LaunchKind::Binary {
+            let executable = stage.join(m.launch.path(&m));
+            if !executable.is_file() {
+                bail!("binary launch path does not name a file")
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut permissions = fs::metadata(&executable)?.permissions();
+                permissions.set_mode(permissions.mode() | 0o111);
+                fs::set_permissions(&executable, permissions)?;
+            }
+        }
         let target = self.root.join(&m.id);
         if target.exists() {
             fs::remove_dir_all(&target)?
@@ -1846,6 +1859,10 @@ async fn run_binary(
             .args(&manifest.launch.args)
             .args(invocation_args)
             .current_dir(&root)
+            .env(
+                "LD_LIBRARY_PATH",
+                binary_library_path(&root, manifest.launch.path(&manifest)),
+            )
             .env("YAM_API_URL", api_url)
             .env("YAM_API_TOKEN", token)
             .env("YAM_PLUGIN_ID", task_id)
@@ -1870,6 +1887,20 @@ async fn run_binary(
     .await?;
     app.runtime_tokens.lock().await.remove(&id);
     result
+}
+
+fn binary_library_path(root: &Path, executable: &str) -> String {
+    let bundled = Path::new(executable)
+        .parent()
+        .and_then(Path::parent)
+        .map(|directory| root.join(directory).join("lib"));
+    match bundled.filter(|directory| directory.is_dir()) {
+        Some(directory) => match std::env::var("LD_LIBRARY_PATH") {
+            Ok(existing) if !existing.is_empty() => format!("{}:{existing}", directory.display()),
+            _ => directory.display().to_string(),
+        },
+        None => std::env::var("LD_LIBRARY_PATH").unwrap_or_default(),
+    }
 }
 
 async fn run_package(
@@ -1955,7 +1986,7 @@ async fn install(State(a): State<App>, mut form: Multipart) -> Result<Json<Manif
 #[derive(Deserialize)]
 struct RegistryInstall {
     id: String,
-    version: String,
+    version: Option<String>,
     registry: String,
 }
 
@@ -1964,7 +1995,7 @@ async fn install_registry(
     Json(request): Json<RegistryInstall>,
 ) -> Result<Json<Manifest>, ApiError> {
     let package = task::spawn_blocking(move || {
-        download_registry_package(&request.registry, &request.id, &request.version)
+        download_registry_package(&request.registry, &request.id, request.version.as_deref())
     })
     .await
     .context("registry download task failed")??;
@@ -1972,7 +2003,7 @@ async fn install_registry(
     Ok(Json(manifest))
 }
 
-fn download_registry_package(registry: &str, id: &str, version: &str) -> Result<Vec<u8>> {
+fn download_registry_package(registry: &str, id: &str, version: Option<&str>) -> Result<Vec<u8>> {
     let index_url = if registry.trim_end_matches('/').ends_with("index.json") {
         registry.to_string()
     } else {
@@ -1983,14 +2014,24 @@ fn download_registry_package(registry: &str, id: &str, version: &str) -> Result<
         .timeout(Duration::from_secs(60))
         .build()?;
     let index: serde_json::Value = client.get(&index_url).send()?.error_for_status()?.json()?;
-    let entry = index["packages"]
+    let packages = index["packages"]
         .as_array()
-        .and_then(|packages| {
-            packages
-                .iter()
-                .find(|entry| entry["id"] == id && entry["version"] == version)
-        })
-        .context("package version not found in registry")?;
+        .context("invalid registry package index")?;
+    let entry = match version {
+        Some(version) => packages
+            .iter()
+            .find(|entry| entry["id"] == id && entry["version"] == version),
+        None => packages
+            .iter()
+            .filter(|entry| entry["id"] == id)
+            .max_by(|left, right| {
+                registry_version(
+                    left["version"].as_str().unwrap_or(""),
+                    right["version"].as_str().unwrap_or(""),
+                )
+            }),
+    }
+    .context("package version not found in registry")?;
     let package_url = entry["url"]
         .as_str()
         .context("registry entry has no package URL")?;
@@ -2010,6 +2051,30 @@ fn download_registry_package(registry: &str, id: &str, version: &str) -> Result<
         bail!("package checksum mismatch")
     }
     Ok(package)
+}
+
+fn registry_version(left: &str, right: &str) -> std::cmp::Ordering {
+    let numbers = |value: &str| {
+        value
+            .trim_start_matches('v')
+            .split(|character: char| character == '.' || character == '-')
+            .map(|part| part.parse::<u64>().unwrap_or(0))
+            .collect::<Vec<_>>()
+    };
+    let left_numbers = numbers(left);
+    let right_numbers = numbers(right);
+    for index in 0..left_numbers.len().max(right_numbers.len()) {
+        match left_numbers
+            .get(index)
+            .copied()
+            .unwrap_or(0)
+            .cmp(&right_numbers.get(index).copied().unwrap_or(0))
+        {
+            std::cmp::Ordering::Equal => {}
+            ordering => return ordering,
+        }
+    }
+    left.cmp(right)
 }
 async fn toggle(
     State(a): State<App>,
@@ -2133,9 +2198,10 @@ async fn terminal_session(
             pixel_width: 0,
             pixel_height: 0,
         })?;
-        let mut command = CommandBuilder::new(root.join(executable));
+        let mut command = CommandBuilder::new(root.join(&executable));
         command.cwd(&root);
         command.args(args);
+        command.env("LD_LIBRARY_PATH", binary_library_path(&root, &executable));
         command.env("YAM_API_URL", api_url);
         command.env("YAM_API_TOKEN", token);
         command.env("YAM_PLUGIN_ID", task_id);

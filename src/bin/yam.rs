@@ -2,7 +2,6 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use reqwest::blocking::{multipart, Client};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::process::Command as ProcessCommand;
 use std::{fs, path::PathBuf};
 
@@ -79,7 +78,7 @@ enum Command {
 #[derive(Subcommand)]
 enum RegistryCommand {
     List,
-    Pull { id: String, version: String },
+    Pull { id: String, version: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -104,7 +103,7 @@ fn main() -> Result<()> {
     let client = Client::new();
     match cli.command {
         Command::Install { package, version } => {
-            if let Some(version) = version {
+            if version.is_some() || !package.is_file() {
                 let id = package
                     .to_str()
                     .context("registry package ID must be valid UTF-8")?;
@@ -113,7 +112,7 @@ fn main() -> Result<()> {
                     &cli.url,
                     cli.registry.as_deref().unwrap_or(DEFAULT_REGISTRY_INDEX),
                     id,
-                    &version,
+                    version.as_deref(),
                 )?;
             } else {
                 let file = fs::File::open(&package)
@@ -193,11 +192,17 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|| DEFAULT_REGISTRY_INDEX.into());
             match command {
                 RegistryCommand::List => {
-                    let (_, packages) = registry_packages(&client, &registry)?;
+                    let packages = registry_packages(&client, &registry)?;
                     println!("{}", serde_json::to_string_pretty(&packages)?);
                 }
                 RegistryCommand::Pull { id, version } => {
-                    install_registry_package(&client, &cli.url, &registry, &id, &version)?;
+                    install_registry_package(
+                        &client,
+                        &cli.url,
+                        &registry,
+                        &id,
+                        version.as_deref(),
+                    )?;
                 }
             }
         }
@@ -270,9 +275,23 @@ fn open_tui(client: &Client, url: &str, id: &str, args: &[String]) -> Result<()>
     command_args.extend(args.iter().cloned());
     let serial = adb_station()?;
     let root = format!("/data/quazar/yam/data/plugins/{id}");
+    let library = std::path::Path::new(path)
+        .parent()
+        .and_then(std::path::Path::parent)
+        .map(|directory| format!("{root}/{}", directory.display()));
+    let library_setup = library
+        .map(|directory| {
+            format!(
+                "export LD_LIBRARY_PATH={}:\"${{LD_LIBRARY_PATH:-}}\" && ",
+                shell_quote(&format!("{directory}/lib"))
+            )
+        })
+        .unwrap_or_default();
     let remote = format!(
-        "cd {} && exec {}{}",
+        "cd {} && chmod 755 {} && {}exec {}{}",
         shell_quote(&root),
+        shell_quote(&format!("./{path}")),
+        library_setup,
         shell_quote(&format!("./{path}")),
         command_args
             .iter()
@@ -320,17 +339,12 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-enum RegistrySource {
-    Api,
-    Static { index_url: String },
-}
-
 fn install_registry_package(
     client: &Client,
     yam_url: &str,
     registry: &str,
     id: &str,
-    version: &str,
+    version: Option<&str>,
 ) -> Result<()> {
     let daemon_response = client
         .post(endpoint(yam_url, "/api/plugins/registry"))
@@ -339,60 +353,20 @@ fn install_registry_package(
             "version": version,
             "registry": registry,
         }))
-        .send();
-    if let Ok(response) = daemon_response {
-        if response.status().is_success() {
-            return print_response(response);
-        }
+        .send()?;
+    if daemon_response.status().is_success() {
+        return print_response(daemon_response);
     }
-
-    let (source, packages) = registry_packages(client, registry)?;
-    let package = match source {
-        RegistrySource::Api => client
-            .get(endpoint(
-                registry,
-                &format!("/api/packages/{id}/{version}/download"),
-            ))
-            .send()?
-            .error_for_status()?
-            .bytes()?,
-        RegistrySource::Static { index_url } => {
-            let entry = packages
-                .as_array()
-                .and_then(|entries| {
-                    entries
-                        .iter()
-                        .find(|entry| entry["id"] == id && entry["version"] == version)
-                })
-                .context("package version not found in static registry")?;
-            let package_url = entry["url"]
-                .as_str()
-                .context("static registry entry has no URL")?;
-            let package = client
-                .get(static_package_url(&index_url, package_url)?)
-                .send()?
-                .error_for_status()?
-                .bytes()?;
-            let expected = entry["sha256"]
-                .as_str()
-                .context("static registry entry has no SHA-256")?;
-            let actual = format!("{:x}", Sha256::digest(&package));
-            if actual != expected {
-                bail!("package checksum mismatch")
-            }
-            package
-        }
-    };
-    let part = multipart::Part::bytes(package.to_vec()).file_name(format!("{id}-{version}.yap"));
-    print_response(
-        client
-            .post(endpoint(yam_url, "/api/plugins"))
-            .multipart(multipart::Form::new().part("package", part))
-            .send()?,
-    )
+    let status = daemon_response.status();
+    let message = daemon_response.text()?;
+    if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::METHOD_NOT_ALLOWED
+    {
+        bail!("yamd does not support registry downloads; update the daemon with the YAM installer")
+    }
+    bail!("yamd registry download failed ({status}): {message}")
 }
 
-fn registry_packages(client: &Client, registry: &str) -> Result<(RegistrySource, Value)> {
+fn registry_packages(client: &Client, registry: &str) -> Result<Value> {
     let index_url = if registry.trim_end_matches('/').ends_with("index.json") {
         registry.to_string()
     } else {
@@ -405,20 +379,13 @@ fn registry_packages(client: &Client, registry: &str) -> Result<(RegistrySource,
         if !packages.is_array() {
             bail!("invalid static registry index")
         }
-        return Ok((RegistrySource::Static { index_url }, packages));
+        return Ok(packages);
     }
     if response.status() != reqwest::StatusCode::NOT_FOUND {
         return Err(response.error_for_status().unwrap_err().into());
     }
     let packages = json_response(client.get(endpoint(registry, "/api/packages")).send()?)?;
-    Ok((RegistrySource::Api, packages))
-}
-
-fn static_package_url(index_url: &str, package_url: &str) -> Result<String> {
-    if reqwest::Url::parse(package_url).is_ok() {
-        return Ok(package_url.into());
-    }
-    Ok(reqwest::Url::parse(index_url)?.join(package_url)?.into())
+    Ok(packages)
 }
 
 fn endpoint(base: &str, path: &str) -> String {

@@ -4,10 +4,11 @@
 
 ```sh
 yam registry list
+yam install aurora
 yam install aurora 1.0.0
 ```
 
-`yam install <путь-к-yap>` устанавливает локальный файл, а `yam install <id> <version>` скачивает и проверяет пакет из реестра. Старая эквивалентная команда `yam registry pull <id> <version>` также поддерживается.
+`yam install <путь-к-yap>` устанавливает локальный файл. `yam install <id>` скачивает последнюю доступную версию из реестра, а `yam install <id> <version>` — конкретную. Эквивалентны команды `yam registry pull <id>` и `yam registry pull <id> <version>`.
 
 По умолчанию CLI использует опубликованный GitHub raw index. Альтернативный статический index можно передать через `--registry URL` или `YAM_REGISTRY_URL`.
 
