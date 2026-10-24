@@ -13,7 +13,7 @@ curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sh
 
 ## Windows
 
-В PowerShell скачайте installer из репозитория и запустите его. По умолчанию он получает последний GitHub Release, проверяет `SHA256SUMS`, устанавливает CLI в `%LOCALAPPDATA%\YAM\bin`, пытается определить IP колонки через `adb devices` и сохраняет `YAM_URL` для текущего пользователя:
+В PowerShell скачайте installer из репозитория и запустите его. По умолчанию он получает последний GitHub Release, проверяет `SHA256SUMS`, устанавливает CLI в `%LOCALAPPDATA%\YAM\bin`, пытается определить IP колонки через `adb devices` и создаёт команду `yam`, настроенную на эту колонку:
 
 ```powershell
 Invoke-WebRequest https://raw.githubusercontent.com/nyakokitsu/yam/main/install.ps1 -OutFile install.ps1

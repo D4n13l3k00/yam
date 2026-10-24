@@ -17,7 +17,8 @@ if ($Version -eq "latest") {
 
 $baseUrl = "https://github.com/$repo/releases/download/$tag"
 $binDir = Join-Path $Prefix "bin"
-$yam = Join-Path $binDir "yam.exe"
+$yamBinary = Join-Path $binDir "yam-bin.exe"
+$yamCommand = Join-Path $binDir "yam.cmd"
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("yam-" + [guid]::NewGuid())
 
 function Find-StationIp {
@@ -52,7 +53,7 @@ try {
         if (-not $expected) { throw "No SHA-256 checksum for $name" }
         $actual = (Get-FileHash -Algorithm SHA256 $download).Hash.ToLowerInvariant()
         if ($actual -ne $expected.ToLowerInvariant()) { throw "Checksum mismatch for $name" }
-        Copy-Item -Force $download (Join-Path $binDir ($name -replace "-x86_64-pc-windows-msvc", ""))
+        Copy-Item -Force $download $yamBinary
     }
 } finally {
     if (Test-Path $tmp) { Remove-Item -Force -Recurse $tmp }
@@ -64,5 +65,16 @@ if (-not $stationIp) { throw "Yandex Station IP address is required" }
 $yamUrl = "http://$stationIp`:8099"
 [Environment]::SetEnvironmentVariable("YAM_URL", $yamUrl, "User")
 $env:YAM_URL = $yamUrl
+@"
+@echo off
+if not defined YAM_URL set "YAM_URL=$yamUrl"
+"%~dp0yam-bin.exe" %*
+"@ | Set-Content -Encoding ascii $yamCommand
+
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if (-not (($userPath -split ";") -contains $binDir)) {
+    [Environment]::SetEnvironmentVariable("Path", (($userPath, $binDir | Where-Object { $_ }) -join ";"), "User")
+}
+$env:Path = "$binDir;$env:Path"
 Write-Host "YAM_URL configured as $yamUrl"
 Write-Host "Use yam list or yam --url $yamUrl list"
