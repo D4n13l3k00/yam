@@ -13,7 +13,7 @@ Windows:
 irm https://raw.githubusercontent.com/nyakokitsu/yam/main/install.ps1 | iex
 ```
 
-Windows CLI управляет колонкой: `yam --url http://<speaker-ip>:8099 list`.
+Установщик сам найдет рабочую колонку и установит через adb на нее `yamd`
 
 # Документация
 
