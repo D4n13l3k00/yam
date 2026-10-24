@@ -13,7 +13,7 @@ curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sh
 
 ## Windows
 
-В PowerShell скачайте installer из репозитория и запустите его. По умолчанию он получает последний GitHub Release, проверяет `SHA256SUMS`, устанавливает CLI в `%LOCALAPPDATA%\YAM\bin`, пытается определить IP колонки через `adb devices` и создаёт команду `yam`, настроенную на эту колонку:
+В PowerShell скачайте installer из репозитория и запустите его. По умолчанию он получает последний GitHub Release, проверяет `SHA256SUMS`, устанавливает CLI в `%LOCALAPPDATA%\YAM\bin`, находит колонку через `adb devices` (или запрашивает IP) и обновляет `yamd` на колонке:
 
 ```powershell
 Invoke-WebRequest https://raw.githubusercontent.com/nyakokitsu/yam/main/install.ps1 -OutFile install.ps1
@@ -22,7 +22,7 @@ Invoke-WebRequest https://raw.githubusercontent.com/nyakokitsu/yam/main/install.
 
 Для конкретной версии: `.\install.ps1 -Version 0.1.1`. Windows CLI управляет daemon на Linux-колонке через `--url http://<speaker-ip>:8099`.
 
-Удаление: на Linux/macOS запустите `curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sh -s -- --uninstall`; на Windows — `.\install.ps1 -Uninstall`. Unix-вариант удаляет CLI с компьютера и останавливает/удаляет `yamd` на найденной через ADB колонке; Windows-вариант удаляет только локальный CLI.
+Удаление: на Linux/macOS запустите `curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sh -s -- --uninstall`; на Windows — `.\install.ps1 -Uninstall`. Unix-вариант удаляет CLI с компьютера и останавливает/удаляет `yamd` на найденной через ADB колонке; Windows-вариант удаляет локальный CLI.
 
 ## Развёртывание через ADB
 

@@ -239,6 +239,20 @@ fn install_registry_package(
     id: &str,
     version: &str,
 ) -> Result<()> {
+    let daemon_response = client
+        .post(endpoint(yam_url, "/api/plugins/registry"))
+        .json(&serde_json::json!({
+            "id": id,
+            "version": version,
+            "registry": registry,
+        }))
+        .send();
+    if let Ok(response) = daemon_response {
+        if response.status().is_success() {
+            return print_response(response);
+        }
+    }
+
     let (source, packages) = registry_packages(client, registry)?;
     let package = match source {
         RegistrySource::Api => client
