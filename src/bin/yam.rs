@@ -287,16 +287,21 @@ fn open_tui(client: &Client, url: &str, id: &str, args: &[String]) -> Result<()>
             )
         })
         .unwrap_or_default();
+    let legacy_runner = format!("./{id}/{id}-run");
+    let rendered_args = command_args
+        .iter()
+        .map(|arg| format!(" {}", shell_quote(arg)))
+        .collect::<String>();
     let remote = format!(
-        "cd {} && chmod 755 {} && {}exec {}{}",
+        "cd {} && if [ -f {} ]; then exec sh {}{}; fi; chmod 755 {} && {}exec {}{}",
         shell_quote(&root),
+        shell_quote(&legacy_runner),
+        shell_quote(&legacy_runner),
+        rendered_args,
         shell_quote(&format!("./{path}")),
         library_setup,
         shell_quote(&format!("./{path}")),
-        command_args
-            .iter()
-            .map(|arg| format!(" {}", shell_quote(arg)))
-            .collect::<String>()
+        rendered_args,
     );
     let status = ProcessCommand::new("adb")
         .args(["-s", &serial, "shell", &remote])

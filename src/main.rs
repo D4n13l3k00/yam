@@ -1855,7 +1855,15 @@ async fn run_binary(
             .create(true)
             .append(true)
             .open(log_path)?;
-        let mut child = Command::new(root.join(executable))
+        let legacy_runner = root.join(&manifest.id).join(format!("{}-run", manifest.id));
+        let mut command = if legacy_runner.is_file() {
+            let mut command = Command::new("sh");
+            command.arg(legacy_runner);
+            command
+        } else {
+            Command::new(root.join(executable))
+        };
+        let mut child = command
             .args(&manifest.launch.args)
             .args(invocation_args)
             .current_dir(&root)
