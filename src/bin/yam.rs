@@ -293,12 +293,11 @@ fn open_tui(client: &Client, url: &str, id: &str, args: &[String]) -> Result<()>
         .map(|arg| format!(" {}", shell_quote(arg)))
         .collect::<String>();
     let remote = format!(
-        "cd {} && if [ -f {} ]; then exec sh {}{}; fi; chmod 755 {} && {}exec {}{}",
+        "cd {} && find . -type f -exec chmod 755 {{}} \\; && if [ -f {} ]; then exec sh {}{}; fi; {}exec {}{}",
         shell_quote(&root),
         shell_quote(&legacy_runner),
         shell_quote(&legacy_runner),
         rendered_args,
-        shell_quote(&format!("./{path}")),
         library_setup,
         shell_quote(&format!("./{path}")),
         rendered_args,

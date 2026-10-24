@@ -471,9 +471,14 @@ impl PluginManager {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let mut permissions = fs::metadata(&executable)?.permissions();
-                permissions.set_mode(permissions.mode() | 0o111);
-                fs::set_permissions(&executable, permissions)?;
+                for entry in walkdir::WalkDir::new(&stage) {
+                    let entry = entry?;
+                    if entry.file_type().is_file() {
+                        let mut permissions = fs::metadata(entry.path())?.permissions();
+                        permissions.set_mode(permissions.mode() | 0o111);
+                        fs::set_permissions(entry.path(), permissions)?;
+                    }
+                }
             }
         }
         let target = self.root.join(&m.id);
