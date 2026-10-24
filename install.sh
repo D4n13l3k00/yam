@@ -49,8 +49,8 @@ command -v adb >/dev/null 2>&1 || {
 }
 
 find_device() {
-  adb devices | awk 'NR > 1 && $2 == "device" {print $1}' | while IFS= read -r serial; do
-    arch=$(adb -s "$serial" shell uname -m 2>/dev/null | tr -d '\r') || continue
+  adb devices </dev/null | awk 'NR > 1 && $2 == "device" {print $1}' | while IFS= read -r serial; do
+    arch=$(adb -s "$serial" shell uname -m </dev/null 2>/dev/null | tr -d '\r') || continue
     case "$arch" in aarch64|arm64) printf '%s\n' "$serial"; return 0;; esac
   done
   return 1
@@ -62,10 +62,22 @@ if [ -z "$DEVICE" ]; then
   IFS= read -r ip </dev/tty
   [ -n "$ip" ] || { echo 'IP address is required.' >&2; exit 6; }
   DEVICE="$ip:5555"
-  adb connect "$DEVICE" >&2
+  adb connect "$DEVICE" </dev/null >&2
   sleep 1
-  adb -s "$DEVICE" get-state >/dev/null
+  adb -s "$DEVICE" get-state </dev/null >/dev/null
 fi
+
+case "$DEVICE" in
+  *:*) STATION_IP=${DEVICE%:*} ;;
+  *)
+    STATION_IP=$(adb -s "$DEVICE" shell 'ip route get 1.1.1.1 2>/dev/null' </dev/null 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1)}' | tr -d '\r' | head -n 1)
+    if [ -z "$STATION_IP" ]; then
+      printf 'Yandex Station IP address: ' >&2
+      IFS= read -r STATION_IP </dev/tty
+    fi
+    ;;
+esac
+[ -n "$STATION_IP" ] || { echo 'IP address is required.' >&2; exit 6; }
 
 download "$RELEASE_URL/SHA256SUMS" "$tmpdir/SHA256SUMS"
 download "$RELEASE_URL/$CLI_ASSET" "$tmpdir/$CLI_ASSET"
@@ -74,10 +86,15 @@ verify "$tmpdir/$CLI_ASSET"
 verify "$tmpdir/yamd-aarch64-linux-musl"
 
 mkdir -p "$BIN_DIR"
-install -m 0755 "$tmpdir/$CLI_ASSET" "$BIN_DIR/yam"
-adb -s "$DEVICE" shell "mkdir -p $DEVICE_PREFIX/bin $DEVICE_PREFIX/data"
-adb -s "$DEVICE" push "$tmpdir/yamd-aarch64-linux-musl" "$DEVICE_PREFIX/bin/yamd.new" >/dev/null
-adb -s "$DEVICE" shell "chmod 0755 $DEVICE_PREFIX/bin/yamd.new; if [ -f $DEVICE_PREFIX/yamd.pid ] && kill -0 \$(cat $DEVICE_PREFIX/yamd.pid) 2>/dev/null; then kill \$(cat $DEVICE_PREFIX/yamd.pid); fi; mv $DEVICE_PREFIX/bin/yamd.new $DEVICE_PREFIX/bin/yamd; start-stop-daemon --start --background --make-pidfile --pidfile $DEVICE_PREFIX/yamd.pid --startas $DEVICE_PREFIX/bin/yamd -- --data-dir $DEVICE_PREFIX/data"
+install -m 0755 "$tmpdir/$CLI_ASSET" "$BIN_DIR/yam-bin"
+cat >"$BIN_DIR/yam" <<EOF
+#!/bin/sh
+exec env YAM_URL="\${YAM_URL:-http://$STATION_IP:8099}" "$BIN_DIR/yam-bin" "\$@"
+EOF
+chmod 0755 "$BIN_DIR/yam"
+adb -s "$DEVICE" shell "mkdir -p $DEVICE_PREFIX/bin $DEVICE_PREFIX/data" </dev/null
+adb -s "$DEVICE" push "$tmpdir/yamd-aarch64-linux-musl" "$DEVICE_PREFIX/bin/yamd.new" </dev/null >/dev/null
+adb -s "$DEVICE" shell "chmod 0755 $DEVICE_PREFIX/bin/yamd.new; if [ -f $DEVICE_PREFIX/yamd.pid ] && kill -0 \$(cat $DEVICE_PREFIX/yamd.pid) 2>/dev/null; then kill \$(cat $DEVICE_PREFIX/yamd.pid); fi; mv $DEVICE_PREFIX/bin/yamd.new $DEVICE_PREFIX/bin/yamd; start-stop-daemon --start --background --make-pidfile --pidfile $DEVICE_PREFIX/yamd.pid --startas $DEVICE_PREFIX/bin/yamd -- --data-dir $DEVICE_PREFIX/data" </dev/null
 
 echo "YAM $VERSION CLI installed in $BIN_DIR/yam"
-echo "yamd deployed to $DEVICE ($DEVICE_PREFIX). Open http://${DEVICE%%:*}:8099"
+echo "yamd deployed to $DEVICE ($DEVICE_PREFIX). Open http://$STATION_IP:8099"
