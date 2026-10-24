@@ -4,7 +4,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         DefaultBodyLimit, Multipart, Path as AxumPath, State,
     },
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse},
     routing::{delete, get, post},
     Json, Router,
@@ -55,6 +55,26 @@ struct Settings {
     web: WebSettings,
     #[serde(default)]
     allow_plugin_binaries: bool,
+    #[serde(default)]
+    updates: UpdateSettings,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UpdateSettings {
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default = "default_update_interval")]
+    interval_minutes: u64,
+}
+fn default_update_interval() -> u64 {
+    360
+}
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_minutes: default_update_interval(),
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WebSettings {
@@ -101,6 +121,7 @@ impl Default for Settings {
             },
             web: WebSettings::default(),
             allow_plugin_binaries: false,
+            updates: UpdateSettings::default(),
         }
     }
 }
@@ -225,6 +246,8 @@ struct App {
     device: Arc<Mutex<DeviceProfile>>,
     led: Arc<Led>,
     plugins: Arc<Mutex<PluginManager>>,
+    runtime_tokens: Arc<Mutex<HashMap<String, String>>>,
+    runtime_api_url: String,
 }
 #[derive(Clone)]
 struct Led {
@@ -1733,7 +1756,14 @@ async fn run_binary(
         }
         (manifest, plugins.root.join(&id))
     };
-    task::spawn_blocking(move || -> Result<()> {
+    let token = Uuid::new_v4().to_string();
+    app.runtime_tokens
+        .lock()
+        .await
+        .insert(id.clone(), token.clone());
+    let api_url = format!("{}/api/runtime/{id}", app.runtime_api_url);
+    let task_id = id.clone();
+    let result = task::spawn_blocking(move || -> Result<()> {
         let executable = manifest.launch.path(&manifest).to_string();
         safe_relative(&executable)?;
         let log_path = root.join("runtime.log");
@@ -1745,6 +1775,9 @@ async fn run_binary(
             .args(&manifest.launch.args)
             .args(invocation_args)
             .current_dir(&root)
+            .env("YAM_API_URL", api_url)
+            .env("YAM_API_TOKEN", token)
+            .env("YAM_PLUGIN_ID", task_id)
             .stdout(log.try_clone()?)
             .stderr(log)
             .spawn()?;
@@ -1763,8 +1796,9 @@ async fn run_binary(
             std::thread::sleep(Duration::from_millis(50));
         }
     })
-    .await??;
-    Ok(())
+    .await?;
+    app.runtime_tokens.lock().await.remove(&id);
+    result
 }
 
 async fn run_package(
@@ -1988,13 +2022,39 @@ async fn terminal(
     };
     let executable = manifest.launch.path(&manifest).to_owned();
     safe_relative(&executable)?;
-    Ok(websocket
-        .on_upgrade(move |socket| terminal_session(socket, root, executable, manifest.launch.args)))
+    let token = Uuid::new_v4().to_string();
+    a.runtime_tokens
+        .lock()
+        .await
+        .insert(id.clone(), token.clone());
+    let api_url = format!("{}/api/runtime/{id}", a.runtime_api_url);
+    Ok(websocket.on_upgrade(move |socket| {
+        terminal_session(
+            socket,
+            root,
+            executable,
+            manifest.launch.args,
+            a,
+            id,
+            token,
+            api_url,
+        )
+    }))
 }
 
-async fn terminal_session(socket: WebSocket, root: PathBuf, executable: String, args: Vec<String>) {
+async fn terminal_session(
+    socket: WebSocket,
+    root: PathBuf,
+    executable: String,
+    args: Vec<String>,
+    app: App,
+    id: String,
+    token: String,
+    api_url: String,
+) {
     let (input_tx, input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
     let (output_tx, mut output_rx) = mpsc::channel::<Vec<u8>>(32);
+    let task_id = id.clone();
     let worker = task::spawn_blocking(move || -> Result<()> {
         let pair = native_pty_system().openpty(PtySize {
             rows: 24,
@@ -2005,6 +2065,9 @@ async fn terminal_session(socket: WebSocket, root: PathBuf, executable: String, 
         let mut command = CommandBuilder::new(root.join(executable));
         command.cwd(&root);
         command.args(args);
+        command.env("YAM_API_URL", api_url);
+        command.env("YAM_API_TOKEN", token);
+        command.env("YAM_PLUGIN_ID", task_id);
         let mut child = pair.slave.spawn_command(command)?;
         let mut reader = pair.master.try_clone_reader()?;
         let mut writer = pair.master.take_writer()?;
@@ -2046,6 +2109,71 @@ async fn terminal_session(socket: WebSocket, root: PathBuf, executable: String, 
     }
     drop(input_tx);
     let _ = worker.await;
+    app.runtime_tokens.lock().await.remove(&id);
+}
+async fn runtime_permission(
+    app: &App,
+    id: &str,
+    headers: &HeaderMap,
+    permission: &str,
+) -> Result<(), ApiError> {
+    validate_id(id)?;
+    let token = headers
+        .get("x-yam-token")
+        .and_then(|value| value.to_str().ok())
+        .context("missing X-YAM-Token")?;
+    if app.runtime_tokens.lock().await.get(id).map(String::as_str) != Some(token) {
+        return Err(ApiError(anyhow!("invalid runtime token")));
+    }
+    let manifest = app.plugins.lock().await.manifest(id)?;
+    if !manifest.permissions.iter().any(|item| item == permission) {
+        return Err(ApiError(anyhow!("package lacks {permission} permission")));
+    }
+    Ok(())
+}
+async fn runtime_device(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<Json<DeviceProfile>, ApiError> {
+    runtime_permission(&a, &id, &headers, "exec").await?;
+    Ok(Json(a.device.lock().await.clone()))
+}
+async fn runtime_sensors(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<SensorInfo>>, ApiError> {
+    runtime_permission(&a, &id, &headers, "sensors").await?;
+    Ok(get_sensors().await)
+}
+async fn runtime_led(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    Json(frame): Json<Frame>,
+) -> Result<StatusCode, ApiError> {
+    runtime_permission(&a, &id, &headers, "led").await?;
+    a.led.draw(frame.colors).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn runtime_led_off(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    runtime_permission(&a, &id, &headers, "led").await?;
+    a.led.off().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn runtime_clock(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<ClockRequest>,
+) -> Result<StatusCode, ApiError> {
+    runtime_permission(&a, &id, &headers, "clock").await?;
+    put_clock(Json(request)).await
 }
 async fn get_settings(State(a): State<App>) -> Json<Settings> {
     Json(a.settings.lock().await.clone())
@@ -2133,6 +2261,99 @@ impl IntoResponse for ApiError {
             .into_response()
     }
 }
+
+fn shell_quote(value: &std::ffi::OsStr) -> String {
+    format!("'{}'", value.to_string_lossy().replace('\'', "'\\''"))
+}
+
+fn stage_release_update(executable: &Path, data_dir: &Path, listen: &str) -> Result<bool> {
+    const RELEASES: &str = "https://github.com/nyakokitsu/yam/releases/latest/download";
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(60))
+        .build()?;
+    let sums = client
+        .get(format!("{RELEASES}/SHA256SUMS"))
+        .header("User-Agent", "yam-auto-updater")
+        .send()?
+        .error_for_status()?
+        .text()?;
+    let expected = sums
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split_whitespace();
+            match (fields.next(), fields.next()) {
+                (Some(hash), Some("yamd-aarch64-linux-musl")) => Some(hash),
+                _ => None,
+            }
+        })
+        .context("release SHA256SUMS has no yamd checksum")?;
+    let binary = client
+        .get(format!("{RELEASES}/yamd-aarch64-linux-musl"))
+        .header("User-Agent", "yam-auto-updater")
+        .send()?
+        .error_for_status()?
+        .bytes()?
+        .to_vec();
+    if format!("{:x}", Sha256::digest(&binary)) != expected {
+        bail!("release checksum mismatch")
+    }
+    if binary == fs::read(executable).unwrap_or_default() {
+        return Ok(false);
+    }
+    let staged = executable.with_extension("yam-update");
+    fs::write(&staged, binary)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))?;
+    }
+    let helper = data_dir.join(".yam-restart-update.sh");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nsleep 1\nmv {} {}\nexec {} --listen {} --data-dir {}\n",
+            shell_quote(staged.as_os_str()),
+            shell_quote(executable.as_os_str()),
+            shell_quote(executable.as_os_str()),
+            shell_quote(std::ffi::OsStr::new(listen)),
+            shell_quote(data_dir.as_os_str()),
+        ),
+    )?;
+    Command::new("sh").arg(helper).spawn()?;
+    Ok(true)
+}
+
+fn start_auto_updater(app: App, executable: PathBuf, listen: String) {
+    task::spawn(async move {
+        loop {
+            let updates = app.settings.lock().await.updates.clone();
+            if updates.enabled {
+                let executable = executable.clone();
+                let data_dir = app.root.clone();
+                let listen = listen.clone();
+                match task::spawn_blocking(move || {
+                    stage_release_update(&executable, &data_dir, &listen)
+                })
+                .await
+                {
+                    Ok(Ok(true)) => {
+                        tracing::info!("release update staged; restarting yamd");
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        std::process::exit(0);
+                    }
+                    Ok(Ok(false)) => {}
+                    Ok(Err(error)) => tracing::warn!(%error, "automatic update check failed"),
+                    Err(error) => tracing::warn!(%error, "automatic update task failed"),
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(
+                updates.interval_minutes.clamp(5, 24 * 60) * 60,
+            ))
+            .await;
+        }
+    });
+}
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
@@ -2172,7 +2393,16 @@ async fn main() -> Result<()> {
         plugins: Arc::new(Mutex::new(PluginManager::new(
             args.data_dir.join("plugins"),
         )?)),
+        runtime_tokens: Arc::new(Mutex::new(HashMap::new())),
+        runtime_api_url: format!(
+            "http://127.0.0.1:{}",
+            args.listen
+                .rsplit(':')
+                .next()
+                .context("listen address has no port")?
+        ),
     };
+    start_auto_updater(app.clone(), std::env::current_exe()?, args.listen.clone());
     let services = {
         let device = app.device.lock().await.clone();
         app.plugins
@@ -2213,6 +2443,11 @@ async fn main() -> Result<()> {
             .route("/api/plugins/:id/stop", post(stop_plugin))
             .route("/api/plugins/:id/logs", get(package_logs))
             .route("/api/plugins/:id/terminal", get(terminal))
+            .route("/api/runtime/:id/device", get(runtime_device))
+            .route("/api/runtime/:id/sensors", get(runtime_sensors))
+            .route("/api/runtime/:id/led", post(runtime_led))
+            .route("/api/runtime/:id/led/off", post(runtime_led_off))
+            .route("/api/runtime/:id/clock", post(runtime_clock))
             .route("/api/settings", get(get_settings).put(put_settings))
             .route("/api/device", get(get_device).put(put_device))
             .route("/api/sensors", get(get_sensors))

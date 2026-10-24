@@ -59,6 +59,16 @@ curl -X POST http://127.0.0.1:18099/api/led/off
 
 Web UI не содержит аутентификации. Открывайте его только в доверенной LAN или используйте reverse proxy с аутентификацией.
 
+## Автообновление
+
+`yamd` раз в шесть часов проверяет последний GitHub Release, скачивает `yamd-aarch64-linux-musl`, сверяет его с `SHA256SUMS` и перезапускается только при отличии бинарника. Автообновление включено по умолчанию; его можно отключить в Web UI или в `settings.toml`:
+
+```toml
+[updates]
+enabled = false
+interval_minutes = 360
+```
+
 ## Отключение Web UI и API
 
 В `settings.toml` задайте секцию `web`:

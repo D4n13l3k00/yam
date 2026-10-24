@@ -66,6 +66,20 @@ args = ["--interval", "10"]
 
 Бинарник обязан соответствовать архитектуре и libc целевой колонки. Для Station Lite используйте AArch64 musl.
 
+### API Alice для бинарников
+
+Запущенный binary-пакет получает одноразовые переменные окружения `YAM_API_URL` и `YAM_API_TOKEN`. Токен действует только пока работает этот экземпляр пакета; передавайте его в заголовке `X-YAM-Token`. API повторно проверяет permission из `plugin.toml`.
+
+```sh
+# Нужны permissions = ["exec", "led", "sensors", "clock"]
+curl -H "X-YAM-Token: $YAM_API_TOKEN" "$YAM_API_URL/device"
+curl -H "X-YAM-Token: $YAM_API_TOKEN" "$YAM_API_URL/sensors"
+curl -X POST -H "X-YAM-Token: $YAM_API_TOKEN" -H 'content-type: application/json' \
+  -d '{"colors":["#4285F4","#EA4335","#FBBC05"]}' "$YAM_API_URL/led"
+```
+
+Доступны `GET /device` (`exec`), `GET /sensors` (`sensors`), `POST /led`, `POST /led/off` (`led`) и `POST /clock` (`clock`). Форматы LED и clock совпадают с HTTP API YAM.
+
 Для бинарного `oneshot`-пакета можно передать аргументы конкретного запуска. Они добавляются после статических `launch.args`:
 
 ```sh
