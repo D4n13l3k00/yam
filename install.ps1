@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$Version = "latest",
-    [string]$Prefix = (Join-Path $env:LOCALAPPDATA "YAM")
+    [string]$Prefix = (Join-Path $env:LOCALAPPDATA "YAM"),
+    [switch]$Uninstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +21,16 @@ $binDir = Join-Path $Prefix "bin"
 $yamBinary = Join-Path $binDir "yam-bin.exe"
 $yamCommand = Join-Path $binDir "yam.cmd"
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("yam-" + [guid]::NewGuid())
+
+if ($Uninstall) {
+    if (Test-Path $Prefix) { Remove-Item -Force -Recurse $Prefix }
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $updatedPath = (($userPath -split ";") | Where-Object { $_ -and $_ -ne $binDir }) -join ";"
+    [Environment]::SetEnvironmentVariable("Path", $updatedPath, "User")
+    [Environment]::SetEnvironmentVariable("YAM_URL", $null, "User")
+    Write-Host "YAM CLI removed from $Prefix"
+    return
+}
 
 function Find-StationIp {
     $adb = Get-Command adb -ErrorAction SilentlyContinue

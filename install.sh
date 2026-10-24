@@ -1,16 +1,22 @@
 #!/bin/sh
 set -eu
 
+ACTION=install
+case "${1:-}" in
+  --uninstall|uninstall) ACTION=uninstall; shift ;;
+esac
 VERSION=${1:-${YAM_VERSION:-latest}}
 BIN_DIR=${2:-${YAM_BIN_DIR:-$HOME/.local/bin}}
 REPOSITORY=https://github.com/nyakokitsu/yam
 DEVICE_PREFIX=/data/quazar/yam
 
-case "$(uname -s):$(uname -m)" in
-  Linux:x86_64|Linux:amd64) CLI_ASSET=yam-x86_64-unknown-linux-musl ;;
-  Darwin:arm64|Darwin:aarch64) CLI_ASSET=yam-aarch64-apple-darwin ;;
-  *) echo "Unsupported host platform $(uname -s) $(uname -m)." >&2; exit 3 ;;
-esac
+if [ "$ACTION" = install ]; then
+  case "$(uname -s):$(uname -m)" in
+    Linux:x86_64|Linux:amd64) CLI_ASSET=yam-x86_64-unknown-linux-musl ;;
+    Darwin:arm64|Darwin:aarch64) CLI_ASSET=yam-aarch64-apple-darwin ;;
+    *) echo "Unsupported host platform $(uname -s) $(uname -m)." >&2; exit 3 ;;
+  esac
+fi
 
 case "$VERSION" in
   latest) RELEASE_URL="$REPOSITORY/releases/latest/download" ;;
@@ -78,6 +84,13 @@ case "$DEVICE" in
     ;;
 esac
 [ -n "$STATION_IP" ] || { echo 'IP address is required.' >&2; exit 6; }
+
+if [ "$ACTION" = uninstall ]; then
+  rm -f "$BIN_DIR/yam" "$BIN_DIR/yam-bin"
+  adb -s "$DEVICE" shell "if [ -f $DEVICE_PREFIX/yamd.pid ] && kill -0 \$(cat $DEVICE_PREFIX/yamd.pid) 2>/dev/null; then kill \$(cat $DEVICE_PREFIX/yamd.pid); fi; rm -rf $DEVICE_PREFIX" </dev/null
+  echo "YAM removed from $BIN_DIR and $DEVICE ($DEVICE_PREFIX)."
+  exit 0
+fi
 
 download "$RELEASE_URL/SHA256SUMS" "$tmpdir/SHA256SUMS"
 download "$RELEASE_URL/$CLI_ASSET" "$tmpdir/$CLI_ASSET"

@@ -22,6 +22,8 @@ Invoke-WebRequest https://raw.githubusercontent.com/nyakokitsu/yam/main/install.
 
 Для конкретной версии: `.\install.ps1 -Version 0.1.1`. Windows CLI управляет daemon на Linux-колонке через `--url http://<speaker-ip>:8099`.
 
+Удаление: на Linux/macOS запустите `curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sh -s -- --uninstall`; на Windows — `.\install.ps1 -Uninstall`. Unix-вариант удаляет CLI с компьютера и останавливает/удаляет `yamd` на найденной через ADB колонке; Windows-вариант удаляет только локальный CLI.
+
 ## Развёртывание через ADB
 
 Для подключённого ADB-устройства:
