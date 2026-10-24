@@ -54,15 +54,34 @@ command -v adb >/dev/null 2>&1 || {
   echo 'adb is required to deploy yamd. Install Android Platform Tools first.' >&2; exit 4;
 }
 
-find_device() {
-  adb devices </dev/null | awk 'NR > 1 && $2 == "device" {print $1}' | while IFS= read -r serial; do
+choose_device() {
+  devices=$(adb devices </dev/null | awk 'NR > 1 && $2 == "device" {print $1}' | while IFS= read -r serial; do
     arch=$(adb -s "$serial" shell uname -m </dev/null 2>/dev/null | tr -d '\r') || continue
-    case "$arch" in aarch64|arm64) printf '%s\n' "$serial"; return 0;; esac
+    if [ "$arch" = aarch64 ] || [ "$arch" = arm64 ]; then
+      model=$(adb -s "$serial" shell getprop ro.product.model </dev/null 2>/dev/null | tr -d '\r')
+      printf '%s\t%s\n' "$serial" "${model:-Yandex Station}"
+    fi
   done
-  return 1
+  )
+  [ -n "$devices" ] || return 1
+  count=$(printf '%s\n' "$devices" | wc -l | tr -d ' ')
+  if [ "$count" -eq 1 ]; then
+    printf '%s\n' "$devices" | awk -F '\t' '{print $1}'
+    return 0
+  fi
+  echo 'Select Yandex Station:' >&2
+  printf '%s\n' "$devices" | awk -F '\t' '{printf "  %d) %s (%s)\n", NR, $2, $1}' >&2
+  printf 'Number: ' >&2
+  IFS= read -r selection </dev/tty
+  case "$selection" in
+    ''|*[!0-9]*) echo 'Invalid selection.' >&2; return 1 ;;
+  esac
+  selected=$(printf '%s\n' "$devices" | sed -n "${selection}p")
+  [ -n "$selected" ] || { echo 'Invalid selection.' >&2; return 1; }
+  printf '%s\n' "$selected" | awk -F '\t' '{print $1}'
 }
 
-DEVICE=$(find_device || true)
+DEVICE=$(choose_device || true)
 if [ -z "$DEVICE" ]; then
   printf 'Yandex Station IP address: ' >&2
   IFS= read -r ip </dev/tty

@@ -32,14 +32,38 @@ if ($Uninstall) {
     return
 }
 
+function Select-StationSerial {
+    $devices = @(& adb devices | Select-Object -Skip 1 | ForEach-Object {
+            $fields = $_ -split "\s+"
+            if ($fields.Length -ge 2 -and $fields[1] -eq "device") {
+                $serial = $fields[0]
+                $arch = & adb -s $serial shell uname -m 2>$null
+                if ($arch -match "aarch64|arm64") {
+                    $model = (& adb -s $serial shell getprop ro.product.model 2>$null).Trim()
+                    [PSCustomObject]@{ Serial = $serial; Model = $(if ($model) { $model } else { "Yandex Station" }) }
+                }
+            }
+        })
+    if ($devices.Count -eq 0) { return $null }
+    if ($devices.Count -eq 1) { return $devices[0].Serial }
+    Write-Host "Select Yandex Station:"
+    for ($i = 0; $i -lt $devices.Count; $i++) {
+        Write-Host ("  {0}) {1} ({2})" -f ($i + 1), $devices[$i].Model, $devices[$i].Serial)
+    }
+    $selection = Read-Host "Number"
+    $number = 0
+    if (-not [int]::TryParse($selection, [ref]$number) -or $number -lt 1 -or $number -gt $devices.Count) {
+        throw "Invalid Yandex Station selection"
+    }
+    return $devices[$number - 1].Serial
+}
+
 function Find-StationIp {
     $adb = Get-Command adb -ErrorAction SilentlyContinue
     if ($adb) {
-        $serial = (& adb devices | Select-Object -Skip 1 | ForEach-Object {
-            $fields = $_ -split "\s+"
-            if ($fields.Length -ge 2 -and $fields[1] -eq "device") { $fields[0] }
-        } | Select-Object -First 1)
+        $serial = Select-StationSerial
         if ($serial) {
+            $script:yamStationSerial = $serial
             $route = & adb -s $serial shell "ip route get 1.1.1.1" 2>$null
             if ($route -match "\bsrc\s+(\d{1,3}(?:\.\d{1,3}){3})") { return $Matches[1] }
             $address = & adb -s $serial shell "ip -4 addr show wlan0" 2>$null
@@ -73,10 +97,7 @@ try {
     if (-not $stationIp) { throw "Yandex Station IP address is required" }
     $adb = Get-Command adb -ErrorAction SilentlyContinue
     if (-not $adb) { throw "adb is required to deploy yamd to the Yandex Station" }
-    $serial = (& adb devices | Select-Object -Skip 1 | ForEach-Object {
-        $fields = $_ -split "\s+"
-        if ($fields.Length -ge 2 -and $fields[1] -eq "device") { $fields[0] }
-    } | Select-Object -First 1)
+    $serial = $script:yamStationSerial
     if (-not $serial) {
         & adb connect "$stationIp`:5555" | Out-Host
         $serial = "$stationIp`:5555"
