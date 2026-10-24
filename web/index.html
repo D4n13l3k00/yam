@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>YAM</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
   <style>
     body { max-width: 900px; margin: 3rem auto; font: 16px system-ui; background: #10131a; color: #e8edf7; }
     button, input, select { padding: .55rem; margin: .2rem; }
@@ -11,6 +12,9 @@
     .plugin { display: flex; gap: .5rem; align-items: center; border-top: 1px solid #344; padding: .6rem 0; }
     .plugin span { flex: 1; }
     small { color: #aab; }
+    dialog { width: min(900px, 96vw); height: min(650px, 85vh); background: #10131a; color: #e8edf7; border: 1px solid #567; }
+    #terminal { height: calc(100% - 2.5rem); }
+    #upload-status { color: #aab; }
   </style>
 </head>
 <body>
@@ -18,7 +22,7 @@
   <p id="device"></p>
   <section>
     <h2>Пакеты</h2>
-    <form id="upload"><input type="file" name="package" accept=".yap" required><button>Установить .yap</button></form>
+    <form id="upload"><input id="package-file" type="file" name="package" accept=".yap" required><button>Установить .yap</button><small id="upload-status"></small></form>
     <div id="plugins"></div>
   </section>
   <section>
@@ -34,6 +38,8 @@
     <label><input id="binaries" type="checkbox"> Разрешить бинарники плагинов</label>
     <button onclick="saveSettings()">Сохранить</button>
   </section>
+  <dialog id="terminal-dialog"><button onclick="closeTerminal()">Закрыть</button><div id="terminal"></div></dialog>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
 <script>
 const api = '/api';
 async function request(path, options) {
@@ -46,7 +52,8 @@ function pluginRow(plugin) {
   const run = compatible ? (running ? 'Перезапустить' : 'Запустить') : 'Несовместим';
   const disabled = compatible ? '' : `disabled title="${incompatibility}"`;
   const stop = running ? `<button onclick="action('${manifest.id}', 'stop')">Остановить</button>` : '';
-  return `<div class="plugin"><span><b>${manifest.name}</b> <small>${manifest.id} · ${manifest.version}<br>${manifest.description || ''}</small></span><button onclick="action('${manifest.id}', 'toggle')">${enabled ? 'Выключить' : 'Включить'}</button><button ${disabled} onclick="action('${manifest.id}', 'invoke')">${run}</button>${stop}<button onclick="action('${manifest.id}', 'delete')">Удалить</button></div>`;
+  const terminal = manifest.launch.kind === 'binary' && manifest.launch.mode === 'oneshot' ? `<button ${disabled} onclick="openTerminal('${manifest.id}')">Терминал</button>` : '';
+  return `<div class="plugin"><span><b>${manifest.name}</b> <small>${manifest.id} · ${manifest.version}<br>${manifest.description || ''}</small></span><button onclick="action('${manifest.id}', 'toggle')">${enabled ? 'Выключить' : 'Включить'}</button><button ${disabled} onclick="action('${manifest.id}', 'invoke')">${run}</button>${terminal}${stop}<button onclick="action('${manifest.id}', 'delete')">Удалить</button></div>`;
 }
 async function load() {
   try {
@@ -63,8 +70,27 @@ async function action(id, name) {
 }
 upload.onsubmit = async event => {
   event.preventDefault();
-  try { await request('/plugins', { method: 'POST', body: new FormData(upload) }); await load(); } catch (error) { alert(error.message); }
+  const file = packageFile.files[0];
+  if (!file) return;
+  if (file.size > 64 * 1024 * 1024) return alert('Пакет больше 64 МиБ');
+  uploadStatus.textContent = `Загрузка ${file.name}…`;
+  try { const form = new FormData(); form.append('package', file, file.name); await request('/plugins', { method: 'POST', body: form }); upload.reset(); await load(); uploadStatus.textContent = 'Установлено'; } catch (error) { uploadStatus.textContent = ''; alert(error.message); }
 };
+let terminalSocket, terminalInstance;
+function openTerminal(id) {
+  terminalDialog.showModal();
+  terminal.innerHTML = '';
+  terminalInstance = new Terminal({ cursorBlink: true, theme: { background: '#10131a' } });
+  terminalInstance.open(terminal);
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  terminalSocket = new WebSocket(`${scheme}://${location.host}${api}/plugins/${encodeURIComponent(id)}/terminal`);
+  terminalSocket.binaryType = 'arraybuffer';
+  terminalSocket.onmessage = event => terminalInstance.write(typeof event.data === 'string' ? event.data : new TextDecoder().decode(event.data));
+  terminalSocket.onerror = () => terminalInstance.writeln('\r\nНе удалось открыть терминал.');
+  terminalSocket.onclose = () => terminalInstance.writeln('\r\nПроцесс завершён.');
+  terminalInstance.onData(data => { if (terminalSocket.readyState === WebSocket.OPEN) terminalSocket.send(data); });
+}
+function closeTerminal() { if (terminalSocket) terminalSocket.close(); if (terminalInstance) terminalInstance.dispose(); terminalDialog.close(); }
 function ringColors() { const list = colors.value.split(',').map(c => c.trim()).filter(Boolean); return list.length ? Array.from({ length: Number(count.value) || list.length }, (_, i) => list[i % list.length]) : list; }
 async function setLed() { try { await request('/led', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ colors: ringColors() }) }); } catch (error) { alert(error.message); } }
 async function turnOff() { try { await request('/led/off', { method: 'POST' }); } catch (error) { alert(error.message); } }

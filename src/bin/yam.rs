@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use reqwest::blocking::{multipart, Client};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::process::Command as ProcessCommand;
 use std::{fs, path::PathBuf};
 
 const DEFAULT_REGISTRY_INDEX: &str =
@@ -49,6 +50,12 @@ enum Command {
     },
     Logs {
         id: String,
+    },
+    /// Open an interactive ADB terminal for an enabled binary oneshot package.
+    Tui {
+        id: String,
+        #[arg(last = true)]
+        args: Vec<String>,
     },
     Inspect {
         id: String,
@@ -170,6 +177,7 @@ fn main() -> Result<()> {
                 .get(endpoint(&cli.url, &format!("/api/plugins/{id}/logs")))
                 .send()?,
         )?,
+        Command::Tui { id, args } => open_tui(&client, &cli.url, &id, &args)?,
         Command::Inspect { id } => {
             let packages: Value =
                 json_response(client.get(endpoint(&cli.url, "/api/plugins")).send()?)?;
@@ -225,6 +233,91 @@ fn main() -> Result<()> {
         },
     }
     Ok(())
+}
+
+fn open_tui(client: &Client, url: &str, id: &str, args: &[String]) -> Result<()> {
+    let packages = json_response(client.get(endpoint(url, "/api/plugins")).send()?)?;
+    let package = packages
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["manifest"]["id"] == id))
+        .context("package not found")?;
+    if package["manifest"]["launch"]["kind"] != "binary" {
+        bail!("TUI is available only for binary packages")
+    }
+    if package["manifest"]["launch"]["mode"] != "oneshot" {
+        bail!("TUI is available only for oneshot packages")
+    }
+    if package["enabled"] != true {
+        bail!("package is disabled")
+    }
+    let settings = json_response(client.get(endpoint(url, "/api/settings")).send()?)?;
+    if settings["allow_plugin_binaries"] != true {
+        bail!("binary execution is disabled by administrator")
+    }
+    let launch = &package["manifest"]["launch"];
+    let path = launch["path"]
+        .as_str()
+        .filter(|path| !path.is_empty())
+        .or_else(|| package["manifest"]["entry"].as_str())
+        .context("package has no launch path")?;
+    let mut command_args = launch["args"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    command_args.extend(args.iter().cloned());
+    let serial = adb_station()?;
+    let root = format!("/data/quazar/yam/data/plugins/{id}");
+    let remote = format!(
+        "cd {} && exec {}{}",
+        shell_quote(&root),
+        shell_quote(&format!("./{path}")),
+        command_args
+            .iter()
+            .map(|arg| format!(" {}", shell_quote(arg)))
+            .collect::<String>()
+    );
+    let status = ProcessCommand::new("adb")
+        .args(["-s", &serial, "shell", &remote])
+        .status()
+        .context("start adb terminal")?;
+    if !status.success() {
+        bail!("TUI exited with {status}")
+    }
+    Ok(())
+}
+
+fn adb_station() -> Result<String> {
+    if let Ok(serial) = std::env::var("ADB_SERIAL") {
+        if !serial.is_empty() {
+            return Ok(serial);
+        }
+    }
+    let output = ProcessCommand::new("adb")
+        .arg("devices")
+        .output()
+        .context("adb is required for yam tui")?;
+    let devices = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            match (fields.next(), fields.next()) {
+                (Some(serial), Some("device")) => Some(serial.to_owned()),
+                _ => None,
+            }
+        })
+        .collect::<Vec<_>>();
+    match devices.as_slice() {
+        [serial] => Ok(serial.clone()),
+        [] => bail!("no ADB device; connect the Yandex Station with adb first"),
+        _ => bail!("multiple ADB devices; set ADB_SERIAL and retry"),
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 enum RegistrySource {
